@@ -1,0 +1,702 @@
+{
+  "meta": {
+    "fallback": "en",
+    "languages": {
+      "en": "English",
+      "es": "Español"
+    },
+    "default": "system"
+  },
+  "strings": {
+    "common.cancel": {
+      "en": "Cancel",
+      "context": "Buttons that abandon an action",
+      "file": "app/main.py"
+    },
+    "common.save": {
+      "en": "Save",
+      "context": "Buttons that persist a form",
+      "file": "app/main.py"
+    },
+    "common.delete": {
+      "en": "Delete",
+      "context": "Buttons that delete a profile",
+      "file": "app/main.py"
+    },
+    "common.close": {
+      "en": "Close",
+      "context": "Buttons that close a dialog",
+      "file": "app/main.py"
+    },
+    "common.add": {
+      "en": "Add",
+      "context": "Buttons that create an item",
+      "file": "app/main.py"
+    },
+    "common.edit": {
+      "en": "Edit",
+      "context": "Buttons that edit an item",
+      "file": "app/main.py"
+    },
+    "common.remove": {
+      "en": "Remove",
+      "context": "Buttons that remove an item",
+      "file": "app/main.py"
+    },
+    "common.ok": {
+      "en": "OK",
+      "context": "Confirmation buttons",
+      "file": "app/main.py"
+    },
+    "common.back": {
+      "en": "Back",
+      "context": "Navigation buttons",
+      "file": "app/main.py"
+    },
+    "connect.title": {
+      "en": "RNS Portfwd",
+      "context": "Main screen title",
+      "file": "app/main.py"
+    },
+    "connect.subtitle": {
+      "en": "Forward local TCP ports over Reticulum",
+      "context": "Main screen subtitle",
+      "file": "app/main.py"
+    },
+    "connect.profile.label": {
+      "en": "Profile",
+      "context": "Saved profile selector",
+      "file": "app/main.py"
+    },
+    "connect.profile.empty": {
+      "en": "No saved profiles",
+      "context": "Empty profile selector",
+      "file": "app/main.py"
+    },
+    "connect.profile.label_hint": {
+      "en": "Profile label",
+      "context": "Profile label input",
+      "file": "app/main.py"
+    },
+    "connect.profile.new": {
+      "en": "New",
+      "context": "Create a new profile",
+      "file": "app/main.py"
+    },
+    "connect.profile.save": {
+      "en": "Save profile",
+      "context": "Save the current profile",
+      "file": "app/main.py"
+    },
+    "connect.profile.delete": {
+      "en": "Delete profile",
+      "context": "Delete the selected profile",
+      "file": "app/main.py"
+    },
+    "connect.hash.label": {
+      "en": "Server hash",
+      "context": "Destination hash label",
+      "file": "app/main.py"
+    },
+    "connect.hash.hint": {
+      "en": "32 hexadecimal characters",
+      "context": "Destination hash placeholder",
+      "file": "app/main.py"
+    },
+    "connect.forwards.title": {
+      "en": "Forwards",
+      "context": "Forward list heading",
+      "file": "app/main.py"
+    },
+    "connect.forwards.empty": {
+      "en": "No forwards yet. Add the services you need.",
+      "context": "Empty forward list",
+      "file": "app/main.py"
+    },
+    "connect.forwards.add": {
+      "en": "Add forward",
+      "context": "Add a forward",
+      "file": "app/main.py"
+    },
+    "connect.forwards.edit": {
+      "en": "Edit",
+      "context": "Edit a forward",
+      "file": "app/main.py"
+    },
+    "connect.forwards.remove": {
+      "en": "Remove",
+      "context": "Remove a forward",
+      "file": "app/main.py"
+    },
+    "connect.forwards.test": {
+      "en": "Probe",
+      "context": "Probe a forward credential",
+      "file": "app/main.py"
+    },
+    "connect.list_password.label": {
+      "en": "List password",
+      "context": "Enumeration password label",
+      "file": "app/main.py"
+    },
+    "connect.list_password.hint": {
+      "en": "Optional; only for List",
+      "context": "Enumeration password placeholder",
+      "file": "app/main.py"
+    },
+    "connect.actions.connect": {
+      "en": "Connect",
+      "context": "Start a forwarding session",
+      "file": "app/main.py"
+    },
+    "connect.actions.cancel": {
+      "en": "Cancel",
+      "context": "Cancel a connection attempt",
+      "file": "app/main.py"
+    },
+    "connect.actions.list": {
+      "en": "List services",
+      "context": "List server services",
+      "file": "app/main.py"
+    },
+    "connect.actions.settings": {
+      "en": "Settings",
+      "context": "Open settings",
+      "file": "app/main.py"
+    },
+    "connect.status.ready": {
+      "en": "Ready",
+      "context": "Idle status",
+      "file": "app/main.py"
+    },
+    "connect.status.connecting": {
+      "en": "Connecting…",
+      "context": "Connecting status",
+      "file": "app/main.py"
+    },
+    "connect.status.retry": {
+      "en": "Retry {attempt} in {seconds}s",
+      "context": "Retry countdown",
+      "file": "app/main.py"
+    },
+    "connect.status.stopped": {
+      "en": "Stopped",
+      "context": "Stopped status",
+      "file": "app/main.py"
+    },
+    "connect.status.saved": {
+      "en": "Profile saved",
+      "context": "Profile saved confirmation",
+      "file": "app/main.py"
+    },
+    "connect.status.deleted": {
+      "en": "Profile deleted",
+      "context": "Profile deleted confirmation",
+      "file": "app/main.py"
+    },
+    "connect.status.need_forward": {
+      "en": "Add at least one forward",
+      "context": "Validation status",
+      "file": "app/main.py"
+    },
+    "connect.status.no_engine": {
+      "en": "The forwarding engine is not available",
+      "context": "Engine unavailable status",
+      "file": "app/main.py"
+    },
+    "connect.status.profile_required": {
+      "en": "Select or create a profile",
+      "context": "Profile required status",
+      "file": "app/main.py"
+    },
+    "connect.password_notice": {
+      "en": "Passwords are stored in clear text inside the app's private sandbox.",
+      "context": "Security notice",
+      "file": "app/main.py"
+    },
+    "editor.title.add": {
+      "en": "Add forward",
+      "context": "Forward editor title",
+      "file": "app/main.py"
+    },
+    "editor.title.edit": {
+      "en": "Edit forward",
+      "context": "Forward editor title",
+      "file": "app/main.py"
+    },
+    "editor.service": {
+      "en": "Service name",
+      "context": "Forward editor field",
+      "file": "app/main.py"
+    },
+    "editor.port": {
+      "en": "Local port",
+      "context": "Forward editor field",
+      "file": "app/main.py"
+    },
+    "editor.port.hint": {
+      "en": "1024-65535, or 0 for automatic",
+      "context": "Forward port placeholder",
+      "file": "app/main.py"
+    },
+    "editor.password": {
+      "en": "Service password",
+      "context": "Forward editor field",
+      "file": "app/main.py"
+    },
+    "editor.error.name": {
+      "en": "Use letters, digits, '_' or '-'",
+      "context": "Forward name validation",
+      "file": "app/main.py"
+    },
+    "editor.error.port": {
+      "en": "Port must be 0 or between 1024 and 65535",
+      "context": "Forward port validation",
+      "file": "app/main.py"
+    },
+    "editor.error.duplicate": {
+      "en": "That local port is already used",
+      "context": "Duplicate forward port",
+      "file": "app/main.py"
+    },
+    "editor.error.password": {
+      "en": "Password must not be empty",
+      "context": "Forward password validation",
+      "file": "app/main.py"
+    },
+    "discovery.list.title": {
+      "en": "Services on the server",
+      "context": "Service list dialog title",
+      "file": "app/main.py"
+    },
+    "discovery.list.password": {
+      "en": "List password",
+      "context": "Enumeration password prompt",
+      "file": "app/main.py"
+    },
+    "discovery.list.empty": {
+      "en": "The server returned no services",
+      "context": "Empty service list",
+      "file": "app/main.py"
+    },
+    "discovery.list.tap": {
+      "en": "Tap a service to use its name",
+      "context": "Service list hint",
+      "file": "app/main.py"
+    },
+    "discovery.list.disabled": {
+      "en": "Listing is disabled on the server. Type the service name manually.",
+      "context": "Enumeration disabled error",
+      "file": "app/main.py"
+    },
+    "discovery.list.auth": {
+      "en": "The list password was rejected",
+      "context": "Enumeration auth error",
+      "file": "app/main.py"
+    },
+    "discovery.probe.title": {
+      "en": "Probe service",
+      "context": "Probe dialog title",
+      "file": "app/main.py"
+    },
+    "discovery.probe.ok": {
+      "en": "{name}: credential accepted ({protocol}, auth={auth})",
+      "context": "Probe success",
+      "file": "app/main.py"
+    },
+    "discovery.probe.fail": {
+      "en": "The credential was rejected",
+      "context": "Probe auth error",
+      "file": "app/main.py"
+    },
+    "discovery.probe.no_path": {
+      "en": "The server could not be reached",
+      "context": "Probe path error",
+      "file": "app/main.py"
+    },
+    "discovery.probe.link_failed": {
+      "en": "Could not open a Link to the server",
+      "context": "Probe link error",
+      "file": "app/main.py"
+    },
+    "discovery.metadata": {
+      "en": "{name} · {protocol} · auth={auth}",
+      "context": "Service metadata line",
+      "file": "app/main.py"
+    },
+    "session.title": {
+      "en": "Session",
+      "context": "Session screen title",
+      "file": "app/main.py"
+    },
+    "session.state.resolving": {
+      "en": "Resolving server…",
+      "context": "Session state",
+      "file": "app/main.py"
+    },
+    "session.state.linking": {
+      "en": "Opening Link…",
+      "context": "Session state",
+      "file": "app/main.py"
+    },
+    "session.state.probing": {
+      "en": "Checking credentials…",
+      "context": "Session state",
+      "file": "app/main.py"
+    },
+    "session.state.listening": {
+      "en": "Listening",
+      "context": "Session state",
+      "file": "app/main.py"
+    },
+    "session.state.reconnecting": {
+      "en": "Reconnecting…",
+      "context": "Session state",
+      "file": "app/main.py"
+    },
+    "session.state.error": {
+      "en": "Error",
+      "context": "Session state",
+      "file": "app/main.py"
+    },
+    "session.state.idle": {
+      "en": "Idle",
+      "context": "Session state",
+      "file": "app/main.py"
+    },
+    "session.link.active": {
+      "en": "Link active",
+      "context": "Link status",
+      "file": "app/main.py"
+    },
+    "session.link.inactive": {
+      "en": "No Link",
+      "context": "Link status",
+      "file": "app/main.py"
+    },
+    "session.retry": {
+      "en": "Retry {attempt} in {seconds}s",
+      "context": "Session retry countdown",
+      "file": "app/main.py"
+    },
+    "session.transport": {
+      "en": "Shared instance on port {port}",
+      "context": "Transport status",
+      "file": "app/main.py"
+    },
+    "session.transport.unavailable": {
+      "en": "Shared instance unavailable",
+      "context": "Transport status",
+      "file": "app/main.py"
+    },
+    "session.forwards.title": {
+      "en": "Forwards",
+      "context": "Forward table heading",
+      "file": "app/main.py"
+    },
+    "session.forward.port": {
+      "en": "Local port",
+      "context": "Forward table heading",
+      "file": "app/main.py"
+    },
+    "session.forward.streams": {
+      "en": "Streams",
+      "context": "Forward table heading",
+      "file": "app/main.py"
+    },
+    "session.forward.bytes": {
+      "en": "In / Out",
+      "context": "Forward table heading",
+      "file": "app/main.py"
+    },
+    "session.forward.ephemeral": {
+      "en": "auto",
+      "context": "Ephemeral port marker",
+      "file": "app/main.py"
+    },
+    "session.forward.ipv6_degraded": {
+      "en": "IPv6 unavailable (IPv4 only)",
+      "context": "IPv6 degradation note",
+      "file": "app/main.py"
+    },
+    "session.counters": {
+      "en": "{streams} streams · {connections} connections · {bytes_in} in / {bytes_out} out",
+      "context": "Session counters",
+      "file": "app/main.py"
+    },
+    "session.log.title": {
+      "en": "Activity",
+      "context": "Session log heading",
+      "file": "app/main.py"
+    },
+    "session.log.empty": {
+      "en": "No activity yet",
+      "context": "Empty log",
+      "file": "app/main.py"
+    },
+    "session.stop": {
+      "en": "Stop",
+      "context": "Stop the session",
+      "file": "app/main.py"
+    },
+    "session.notification.title": {
+      "en": "RNS Portfwd",
+      "context": "Notification title",
+      "file": "app/main.py"
+    },
+    "session.notification.connecting": {
+      "en": "Connecting…",
+      "context": "Notification text",
+      "file": "app/main.py"
+    },
+    "session.notification.listening": {
+      "en": "Forwarding {count} port(s)",
+      "context": "Notification text",
+      "file": "app/main.py"
+    },
+    "session.notification.reconnecting": {
+      "en": "Reconnecting…",
+      "context": "Notification text",
+      "file": "app/main.py"
+    },
+    "session.notification.stop": {
+      "en": "Stop",
+      "context": "Notification action",
+      "file": "app/main.py"
+    },
+    "session.background.unavailable": {
+      "en": "Foreground service unavailable: {error}",
+      "context": "Background fallback",
+      "file": "app/main.py"
+    },
+    "session.background.notifications_denied": {
+      "en": "Notifications are disabled; the foreground service may be hidden.",
+      "context": "Notification permission notice",
+      "file": "app/main.py"
+    },
+    "session.background.notifications_granted": {
+      "en": "Notifications enabled",
+      "context": "Notification permission confirmation",
+      "file": "app/main.py"
+    },
+    "settings.title": {
+      "en": "Settings",
+      "context": "Settings screen title",
+      "file": "app/main.py"
+    },
+    "settings.language": {
+      "en": "Language",
+      "context": "Language setting",
+      "file": "app/main.py"
+    },
+    "settings.language.system": {
+      "en": "System",
+      "context": "Language option",
+      "file": "app/main.py"
+    },
+    "settings.language.es": {
+      "en": "Español",
+      "context": "Language option",
+      "file": "app/main.py"
+    },
+    "settings.language.en": {
+      "en": "English",
+      "context": "Language option",
+      "file": "app/main.py"
+    },
+    "settings.version": {
+      "en": "Version {version}",
+      "context": "Version label",
+      "file": "app/main.py"
+    },
+    "settings.license": {
+      "en": "License: GPL-3.0-or-later",
+      "context": "License label",
+      "file": "app/main.py"
+    },
+    "settings.password_notice": {
+      "en": "Profiles store service passwords in clear text inside the app's private storage.",
+      "context": "Password notice",
+      "file": "app/main.py"
+    },
+    "settings.back": {
+      "en": "Back",
+      "context": "Back to the previous screen",
+      "file": "app/main.py"
+    },
+    "settings.saved": {
+      "en": "Settings saved",
+      "context": "Settings confirmation",
+      "file": "app/main.py"
+    },
+    "settings.language.restart_manual": {
+      "en": "Could not rebuild the interface; reopen the app to apply the language.",
+      "context": "Language fallback",
+      "file": "app/main.py"
+    },
+    "permissions.notifications_denied": {
+      "en": "Notification permission denied",
+      "context": "Permission result",
+      "file": "app/main.py"
+    },
+    "permissions.notifications_granted": {
+      "en": "Notification permission granted",
+      "context": "Permission result",
+      "file": "app/main.py"
+    },
+    "permissions.notifications_failed": {
+      "en": "Could not request notification permission: {error}",
+      "context": "Permission error",
+      "file": "app/main.py"
+    },
+    "permissions.notifications_hint": {
+      "en": "Allow notifications so the foreground session stays visible.",
+      "context": "Permission rationale",
+      "file": "app/main.py"
+    },
+    "log.stream_open": {
+      "en": "Opened {name} on port {port}",
+      "context": "Activity log",
+      "file": "app/main.py"
+    },
+    "log.stream_close": {
+      "en": "Closed {name}: {reason} ({bytes_in} in, {bytes_out} out, {duration}s)",
+      "context": "Activity log",
+      "file": "app/main.py"
+    },
+    "log.stream_rejected": {
+      "en": "Rejected {name}: {reason}",
+      "context": "Activity log",
+      "file": "app/main.py"
+    },
+    "log.retry": {
+      "en": "Retry {attempt} in {seconds}s ({code})",
+      "context": "Activity log",
+      "file": "app/main.py"
+    },
+    "log.link_lost": {
+      "en": "Link lost; reconnecting",
+      "context": "Activity log",
+      "file": "app/main.py"
+    },
+    "log.error": {
+      "en": "Error: {message}",
+      "context": "Activity log",
+      "file": "app/main.py"
+    },
+    "log.transport": {
+      "en": "Transport: {state}",
+      "context": "Activity log",
+      "file": "app/main.py"
+    },
+    "error.config": {
+      "en": "Invalid configuration: {message}",
+      "context": "Validation error",
+      "file": "app/main.py"
+    },
+    "error.busy": {
+      "en": "Another operation is already running",
+      "context": "Busy error",
+      "file": "app/main.py"
+    },
+    "error.shared_instance": {
+      "en": "Start Columba, MeshChat or another shared-instance provider and try again.",
+      "context": "Transport error",
+      "file": "app/main.py"
+    },
+    "error.no_path": {
+      "en": "No path to the server. Check the hash and that the server is reachable.",
+      "context": "Resolution error",
+      "file": "app/main.py"
+    },
+    "error.link_failed": {
+      "en": "Could not establish a Link with the server.",
+      "context": "Link error",
+      "file": "app/main.py"
+    },
+    "error.auth": {
+      "en": "The service credential was rejected.",
+      "context": "Auth error",
+      "file": "app/main.py"
+    },
+    "error.version": {
+      "en": "The server uses an incompatible protocol version.",
+      "context": "Version error",
+      "file": "app/main.py"
+    },
+    "error.port_in_use": {
+      "en": "Local port {port} is already in use; choose another.",
+      "context": "Bind error",
+      "file": "app/main.py"
+    },
+    "error.low_port": {
+      "en": "Android does not allow local ports below 1024.",
+      "context": "Low port error",
+      "file": "app/main.py"
+    },
+    "error.list_disabled": {
+      "en": "Listing is disabled on the server; type the service name manually.",
+      "context": "Enumeration disabled error",
+      "file": "app/main.py"
+    },
+    "error.notification_permission": {
+      "en": "Notification permission was denied; the foreground service may be hidden.",
+      "context": "Permission error",
+      "file": "app/main.py"
+    },
+    "error.bind_failed": {
+      "en": "Could not open the local listener.",
+      "context": "Bind error",
+      "file": "app/main.py"
+    },
+    "error.stream_limit": {
+      "en": "The server reached its stream limit.",
+      "context": "Stream error",
+      "file": "app/main.py"
+    },
+    "error.backend": {
+      "en": "The remote service is unavailable.",
+      "context": "Backend error",
+      "file": "app/main.py"
+    },
+    "error.internal": {
+      "en": "Unexpected error: {message}",
+      "context": "Internal error",
+      "file": "app/main.py"
+    },
+    "error.unknown": {
+      "en": "Unexpected error ({code}).",
+      "context": "Unknown error code",
+      "file": "app/main.py"
+    },
+    "error.hash": {
+      "en": "The server hash must have 32 hexadecimal characters.",
+      "context": "Hash validation",
+      "file": "app/main.py"
+    },
+    "error.name": {
+      "en": "Use letters, digits, '_' or '-' for the service name.",
+      "context": "Name validation",
+      "file": "app/main.py"
+    },
+    "error.port": {
+      "en": "The local port must be 0 or between 1024 and 65535.",
+      "context": "Port validation",
+      "file": "app/main.py"
+    },
+    "error.password": {
+      "en": "The password must not be empty.",
+      "context": "Password validation",
+      "file": "app/main.py"
+    },
+    "error.duplicates": {
+      "en": "Two forwards use the same local port.",
+      "context": "Duplicate port validation",
+      "file": "app/main.py"
+    },
+    "connect.forwards.locked": {
+      "en": "Stop the active session before editing forwards.",
+      "context": "Shown when forward editing is attempted during a session",
+      "file": "app/main.py"
+    }
+  }
+}
