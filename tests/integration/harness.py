@@ -316,3 +316,39 @@ def read_all(port: int, timeout: float = 60) -> bytes:
         return b"".join(chunks)
     finally:
         sock.close()
+
+
+class BannerHandler(socketserver.BaseRequestHandler):
+    banner = b""
+
+    def handle(self):
+        try:
+            self.request.sendall(self.banner)
+            while True:
+                data = self.request.recv(65536)
+                if not data:
+                    break
+                self.request.sendall(data)
+        except OSError:
+            pass
+
+
+def banner_server(banner: bytes) -> TCPServer:
+    handler = type("BoundBannerHandler", (BannerHandler,), {"banner": banner})
+    return TCPServer(handler)
+
+
+def read_greeting(port: int, size: int, timeout: float = 30) -> bytes:
+    sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    try:
+        chunks = []
+        remaining = size
+        while remaining > 0:
+            data = sock.recv(remaining)
+            if not data:
+                break
+            chunks.append(data)
+            remaining -= len(data)
+        return b"".join(chunks)
+    finally:
+        sock.close()

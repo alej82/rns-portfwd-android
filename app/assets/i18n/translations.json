@@ -133,6 +133,11 @@
       "context": "Probe a forward credential",
       "file": "app/main.py"
     },
+    "connect.forwards.duplicate_service": {
+      "en": "Warning: more than one forward opens the service {names}. Each forward uses the service name written here, not the local port. Edit a forward if you expected a different service.",
+      "context": "Shown when two or more forwards target the same service name",
+      "file": "app/main.py"
+    },
     "connect.list_password.label": {
       "en": "List password",
       "context": "Enumeration password label",
@@ -556,6 +561,11 @@
     "log.stream_open": {
       "en": "Opened {name} on port {port}",
       "context": "Activity log",
+      "file": "app/main.py"
+    },
+    "log.stream_open_error": {
+      "en": "Could not open {name} on port {port}: {message}",
+      "context": "Activity log when the server rejects a stream",
       "file": "app/main.py"
     },
     "log.stream_close": {

@@ -102,6 +102,17 @@ def validate_forwards(values):
     return forwards
 
 
+def duplicate_forward_names(values):
+    counts = {}
+    for value in values:
+        name = value.get("name") if isinstance(value, dict) else getattr(value, "name", None)
+        text = str(name or "").strip()
+        if not text:
+            continue
+        counts[text] = counts.get(text, 0) + 1
+    return sorted(name for name, count in counts.items() if count > 1)
+
+
 def validate_config(server_hash, forwards, list_password=None):
     resolved_hash = validate_hash(server_hash)
     resolved_forwards = validate_forwards(forwards)

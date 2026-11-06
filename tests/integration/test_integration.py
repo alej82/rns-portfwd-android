@@ -150,3 +150,24 @@ def test_port_in_use_is_terminal(instance):
         blocker.close()
         server.terminate()
         echo.close()
+
+
+def test_forwards_route_to_their_own_service(instance):
+    ssh = harness.banner_server(b"SSH-2.0-rns-portfwd-test\r\n")
+    vnc = harness.banner_server(b"RFB 003.008\n")
+    server, server_hash = harness.start_server(
+        instance, {"ssh": ssh.port, "vnc": vnc.port}
+    )
+    engine = None
+    try:
+        engine = harness.start_engine(
+            instance, server_hash, ["ssh:0:secret", "vnc:0:secret"]
+        )
+        assert harness.read_greeting(engine.ports["ssh"], 3) == b"SSH"
+        assert harness.read_greeting(engine.ports["vnc"], 3) == b"RFB"
+    finally:
+        if engine is not None:
+            engine.terminate()
+        server.terminate()
+        ssh.close()
+        vnc.close()

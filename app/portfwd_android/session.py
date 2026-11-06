@@ -41,6 +41,14 @@ def _jittered(attempt):
     return max(0.5, base * random.uniform(0.8, 1.2))
 
 
+_OPEN_ERROR_CODES = {
+    int(ErrorCode.AUTH): "auth",
+    int(ErrorCode.BACKEND): "backend",
+    int(ErrorCode.LIMIT): "stream_limit",
+    int(ErrorCode.VERSION): "version",
+}
+
+
 class Session:
     def __init__(
         self,
@@ -461,7 +469,7 @@ class Session:
                 on_closed=lambda closed, name=bound.name, stats=stats: self._stream_closed(
                     stats, name, closed
                 ),
-                label=f"{bound.name}/{stream_id}",
+                label=f"{bound.name}@{bound.actual_port}/{stream_id}",
             )
             if not mux.install(stream_id, stream):
                 mux.release_reservation(stream_id)
@@ -493,11 +501,16 @@ class Session:
                 code = int(stream.open_error)
                 if code == int(ErrorCode.VERSION):
                     raise Terminal("version", "server rejected the protocol version")
+                error_code = _OPEN_ERROR_CODES.get(code, "backend")
                 if stats is not None:
                     with self._lock:
-                        stats["last_error"] = (
-                            "auth" if code == int(ErrorCode.AUTH) else "backend"
-                        )
+                        stats["last_error"] = error_code
+                self._publish(
+                    "stream_open_error",
+                    name=bound.name,
+                    port=bound.actual_port,
+                    error_code=error_code,
+                )
                 return
             if stream.closed:
                 return

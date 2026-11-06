@@ -1,6 +1,7 @@
 import pytest
 from portfwd_android.validation import (
     ValidationError,
+    duplicate_forward_names,
     validate_config,
     validate_forward,
     validate_forwards,
@@ -76,3 +77,14 @@ def test_duplicate_ports_are_rejected_but_zero_is_repeatable():
 def test_empty_forwards_are_rejected():
     with pytest.raises(ValidationError):
         validate_forwards([])
+
+
+def test_duplicate_forward_names_are_reported():
+    forwards = [
+        {"name": "ssh", "local_port": 2222, "password": "x"},
+        {"name": "ssh", "local_port": 5900, "password": "x"},
+        {"name": "vnc", "local_port": 5901, "password": "x"},
+    ]
+    assert duplicate_forward_names(forwards) == ["ssh"]
+    assert duplicate_forward_names([{"name": "ssh"}, {"name": "vnc"}]) == []
+    assert duplicate_forward_names([{"name": ""}, {"name": ""}]) == []

@@ -31,6 +31,7 @@ from portfwd_android.profiles import ProfileStore
 from portfwd_android.settings import Settings
 from portfwd_android.validation import (
     ValidationError,
+    duplicate_forward_names,
     validate_config,
     validate_name,
     validate_password,
@@ -419,6 +420,19 @@ class ConnectScreen(Screen):
             row.add_widget(actions)
             self.forward_box.add_widget(row)
 
+        duplicates = duplicate_forward_names(self.forwards)
+        if duplicates:
+            warning = _label(
+                t("connect.forwards.duplicate_service", names=", ".join(duplicates)),
+                size_hint_y=None,
+                height=dp(56),
+                halign="left",
+                valign="middle",
+                color=(1, 0.8, 0.4, 1),
+            )
+            warning.bind(size=lambda *_, label=warning: setattr(label, "text_size", (label.width, None)))
+            self.forward_box.add_widget(warning)
+
     def add_forward(self):
         if self.app.session_active():
             self.set_status(t("connect.forwards.locked"), "error")
@@ -793,6 +807,13 @@ class PortfwdApp(App):
             )
         if kind == "stream_rejected":
             return t("log.stream_rejected", name=event.get("name"), reason=event.get("reason"))
+        if kind == "stream_open_error":
+            return t(
+                "log.stream_open_error",
+                name=event.get("name"),
+                port=event.get("port"),
+                message=_error_text(event.get("error_code")),
+            )
         if kind == "session_retry":
             return t(
                 "log.retry",
