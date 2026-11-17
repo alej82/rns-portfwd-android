@@ -8,6 +8,7 @@ failed installs and negative results are recorded too, not just the successes.
 | --- | --- | --- |
 | 2026-11-17 | `add-client-identity-and-stamping` | [`2026-11-17-identity-stamping/`](2026-11-17-identity-stamping/README.md) |
 | 2026-11-17 | `harden-stamp-cost-and-idle-link` | [`2026-11-17-stamp-cap-and-link-refresh/`](2026-11-17-stamp-cap-and-link-refresh/README.md) |
+| 2026-11-17 | Launcher icon and loading screen | [`2026-11-17-icon-and-splash/`](2026-11-17-icon-and-splash/README.md) |
 
 ## Conventions
 

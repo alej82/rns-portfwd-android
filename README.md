@@ -39,6 +39,9 @@ Current version: `0.3.0` · License: GPL-3.0-or-later · Target: Android 7.0+,
   provider restarts.
 - Spanish and English UI with runtime language switching and no engine restart.
 - Secrets redacted from logs, errors and the notification.
+- Launcher icon and loading screen built from the project logo, with an
+  adaptive icon for Android 8+, the flat bitmap for older releases, and the
+  logo centred at half the screen width while the app starts.
 - Bounded event/log history, per-forward byte and stream counters.
 
 ## How it works

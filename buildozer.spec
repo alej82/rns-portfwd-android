@@ -14,6 +14,14 @@ requirements = python3,kivy,pyjnius,android,cryptography,cffi,pyserial,setuptool
 orientation = portrait
 fullscreen = 0
 
+# Launcher icon and loading screen, generated from the logo by
+# tools/make_icons.py (the artwork sources live in assets/icon/source).
+icon.filename = assets/icon/icon.png
+icon.adaptive_foreground.filename = assets/icon/icon-foreground.png
+icon.adaptive_background.filename = assets/icon/icon-background.png
+presplash.filename = assets/icon/presplash.jpg
+android.presplash_color = #FFFFFF
+
 android.permissions = INTERNET,FOREGROUND_SERVICE,WAKE_LOCK,POST_NOTIFICATIONS
 android.add_src = android-java
 android.api = 33

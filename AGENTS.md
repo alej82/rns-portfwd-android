@@ -76,6 +76,19 @@ in `app/rns_portfwd/` (commit `ee2068a`). The app targets API 33, min API 24,
   it is handed to a connection; a used Link is never refreshed.
 - **UI strings** go through `portfwd_android.i18n.t()`; server names, hashes,
   backend names and server error strings are never translated.
+- **Icon assets are generated, never hand-edited.** `tools/make_icons.py`
+  derives `assets/icon/{icon,icon-foreground,icon-background}.png` and
+  `presplash.jpg` from `assets/icon/source/android_enchufe.png` (2x render of
+  the SVG, plate centre 899.5,999.5 radius 860). `buildozer.spec` wires the
+  legacy icon, the adaptive pair (`icon.adaptive_*`) and the presplash;
+  `android.presplash_color` is `#FFFFFF` because p4a draws the presplash with
+  `FIT_CENTER` and the artwork's margin is white. The splash canvas is 1080x1920
+  (16:9) with the plate at 55 % of its width: because the view scales the image
+  to fit the screen, a full-width artwork would fill the phone, while a wider
+  canvas keeps the logo centred and smaller on every portrait aspect. The
+  presplash must be a real JPEG: p4a copies it to `drawable/presplash.jpg`
+  without converting.
+  `tests/unit/test_assets.py` enforces sizes, formats and transparency.
 - **Manifest invariants**: `android:allowBackup="false"`, the
   `dataSync` foreground service type, and the non-exported `StopReceiver`.
   `tools/p4a_hook.py` adds/repairs both declarations after p4a packaging.
@@ -106,6 +119,10 @@ app/portfwd_android/
   background.py              foreground-service facade
 app/rns_portfwd/             vendor (do not edit)
 app/assets/i18n/             translations.json master + es.json
+assets/icon/                 launcher icon + presplash (not bundled in the
+                             payload; the APK build reads them from here)
+assets/icon/source/          logo vector + 2x render
+tools/make_icons.py          regenerates assets/icon from the artwork
 android-java/io/areche/portfwd/
   PortfwdService.java        foreground service, notification, wake lock
   StopReceiver.java          notification action -> StopSignal -> activity

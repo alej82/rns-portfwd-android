@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1000" width="900" height="1000">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="62%">
+      <stop offset="0" stop-color="#F6FCF8"/>
+      <stop offset="0.7" stop-color="#E3F2E9"/>
+      <stop offset="1" stop-color="#CFE7DA"/>
+    </radialGradient>
+    <radialGradient id="shadow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#2A4A38" stop-opacity="0.30"/>
+      <stop offset="0.55" stop-color="#2A4A38" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#2A4A38" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="plug" x1="0" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.45" stop-color="#F3F7FA"/>
+      <stop offset="1" stop-color="#BDCCD5"/>
+    </linearGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7B878E"/>
+      <stop offset="0.3" stop-color="#F4F9FC"/>
+      <stop offset="0.7" stop-color="#A4B0B6"/>
+      <stop offset="1" stop-color="#6A767D"/>
+    </linearGradient>
+  </defs>
+
+  <!-- fondo -->
+  <circle cx="450" cy="500" r="430" fill="url(#bg)"/>
+
+  <!-- conjunto centrado en el circulo -->
+  <g transform="translate(-95,101)">
+
+    <!-- sombras -->
+    <ellipse cx="452" cy="666" rx="200" ry="37" fill="url(#shadow)"/>
+    <ellipse cx="744" cy="646" rx="48" ry="11" fill="url(#shadow)"/>
+
+    <g stroke="#123024" stroke-width="9" stroke-linejoin="round" stroke-linecap="round">
+      <!-- piernas cortas y gruesas -->
+      <rect x="384" y="505" width="64" height="150" rx="32" fill="#3DDC84"/>
+      <rect x="470" y="505" width="64" height="150" rx="32" fill="#3DDC84"/>
+    </g>
+
+    <!-- brazos cortos (detras del torso) -->
+    <g fill="none" stroke-linecap="round">
+      <path d="M360 368 L308 452" stroke="#123024" stroke-width="72"/>
+      <path d="M360 368 L308 452" stroke="#3DDC84" stroke-width="54"/>
+      <path d="M528 372 L614 300" stroke="#123024" stroke-width="72"/>
+      <path d="M528 372 L614 300" stroke="#3DDC84" stroke-width="54"/>
+    </g>
+
+    <!-- torso regordete -->
+    <rect x="337" y="330" width="225" height="210" rx="56" fill="#3DDC84" stroke="#123024" stroke-width="9" stroke-linejoin="round"/>
+    <rect x="357" y="352" width="28" height="112" rx="14" fill="#FFFFFF" opacity="0.18"/>
+
+    <!-- cable -->
+    <g fill="none" stroke-linecap="round">
+      <path d="M614 300 C 656 264, 700 250, 720 284 C 740 318, 702 354, 708 386 C 714 416, 758 424, 764 446 C 767 458, 756 464, 744 468"
+            stroke="#2E3A48" stroke-width="17"/>
+      <path d="M720 286 C 736 316, 704 352, 709 384" stroke="#7E91A2" stroke-width="5" opacity="0.45"/>
+      <path d="M760 428 C 766 444, 758 456, 748 462" stroke="#7E91A2" stroke-width="5" opacity="0.4"/>
+      <path d="M638 286 C 656 270, 676 260, 692 256" stroke="#7E91A2" stroke-width="5" opacity="0.4"/>
+    </g>
+
+    <!-- enchufe europeo de dos polos (escalado sobre el punto de union del cable) -->
+    <g transform="translate(744,468) scale(0.78) translate(-744,-468)">
+      <g stroke="#123024" stroke-width="11" stroke-linejoin="round" stroke-linecap="round">
+        <rect x="728" y="426" width="32" height="50" rx="15" fill="#2E3A48"/>
+        <rect x="664" y="468" width="160" height="84" rx="34" fill="url(#plug)"/>
+        <rect x="680" y="540" width="128" height="62" rx="26" fill="url(#plug)"/>
+      </g>
+      <g stroke="#123024" stroke-width="9" stroke-linejoin="round">
+        <rect x="693" y="600" width="22" height="66" rx="11" fill="url(#pin)"/>
+        <rect x="773" y="600" width="22" height="66" rx="11" fill="url(#pin)"/>
+      </g>
+      <rect x="680" y="484" width="16" height="50" rx="8" fill="#FFFFFF" opacity="0.8"/>
+    </g>
+
+    <!-- cabeza -->
+    <path d="M318 308 A132 132 0 0 1 582 308 Z" fill="#3DDC84" stroke="#123024" stroke-width="9" stroke-linejoin="round"/>
+    <g stroke="#123024" stroke-width="11" stroke-linecap="round" fill="none">
+      <path d="M357 215 L325 167"/>
+      <path d="M543 215 L575 167"/>
+    </g>
+    <ellipse cx="393" cy="222" rx="50" ry="28" fill="#FFFFFF" opacity="0.20" transform="rotate(-22 393 222)"/>
+    <circle cx="402" cy="262" r="17" fill="#123024"/>
+    <circle cx="498" cy="262" r="17" fill="#123024"/>
+    <circle cx="396" cy="256" r="5" fill="#FFFFFF" opacity="0.9"/>
+    <circle cx="492" cy="256" r="5" fill="#FFFFFF" opacity="0.9"/>
+  </g>
+</svg>
