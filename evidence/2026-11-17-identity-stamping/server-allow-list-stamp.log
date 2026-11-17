@@ -1,0 +1,13 @@
+    return __get_builtin_constructor(name)
+    return __get_builtin_constructor(name)
+[INFO] server ready: 5e5c054ec00d76dc6cb32d5d556d32ca (1 services, listing disabled)
+destination: 5e5c054ec00d76dc6cb32d5d556d32ca
+services: echo
+[INFO] stream echo/1 opened
+[INFO] stream echo/1 closed: both directions closed (13 bytes in, 13 bytes out, 0.0s)
+[INFO] link closed
+[INFO] link closed
+[INFO] link closed
+[INFO] link closed
+[INFO] stream echo/1 opened
+[INFO] stream echo/1 closed: both directions closed (15 bytes in, 15 bytes out, 0.1s)

@@ -8,6 +8,4 @@ __pycache__/
 .ruff_cache/
 .kivy/
 *.egg-info/
-evidence/
-openspec/
 .opencode/

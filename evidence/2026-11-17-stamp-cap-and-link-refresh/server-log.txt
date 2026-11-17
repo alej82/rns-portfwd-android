@@ -1,0 +1,20 @@
+[INFO] stream echo/1 closed: both directions closed (13 bytes in, 13 bytes out, 0.1s)
+[INFO] link closed
+[INFO] link closed
+[INFO] link closed
+[INFO] link closed
+[INFO] link closed
+[INFO] link closed
+[INFO] stream echo/1 opened
+[INFO] stream echo/1 closed: both directions closed (8 bytes in, 8 bytes out, 0.0s)
+[INFO] stream echo/2 opened
+[INFO] stream echo/2 closed: both directions closed (8 bytes in, 8 bytes out, 0.0s)
+[INFO] link closed
+[INFO] link closed
+[INFO] stream echo/1 opened
+[INFO] stream echo/1 closed: both directions closed (12 bytes in, 12 bytes out, 0.0s)
+[INFO] link closed
+[INFO] link closed
+[INFO] stream echo/1 opened
+[INFO] stream echo/1 closed: both directions closed (13 bytes in, 13 bytes out, 0.0s)
+[INFO] link closed
