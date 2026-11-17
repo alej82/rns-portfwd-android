@@ -31,6 +31,7 @@ from portfwd_android.paths import is_android
 from portfwd_android.profiles import ProfileStore
 from portfwd_android.settings import Settings
 from portfwd_android.validation import (
+    MAX_STAMP_COST,
     ValidationError,
     duplicate_forward_names,
     validate_config,
@@ -360,13 +361,20 @@ class ConnectScreen(Screen):
         )
         self.stamp_mode.bind(text=self._stamp_changed)
         root.add_widget(self.stamp_mode)
-        self.stamp_cost_label = _label(t("connect.stamp.cost"), size_hint_y=None, height=dp(22))
+        cost_label = t("connect.stamp.cost", max=f"{MAX_STAMP_COST:g}")
+        self.stamp_cost_label = _label(cost_label, size_hint_y=None, height=dp(22))
         root.add_widget(self.stamp_cost_label)
-        self.stamp_cost = _input(t("connect.stamp.cost"))
+        self.stamp_cost = _input(cost_label)
         self.stamp_cost.input_type = "number"
         self.stamp_cost.input_filter = "float"
         root.add_widget(self.stamp_cost)
-        root.add_widget(_wrapped(_label(t("connect.stamp.hint")), height=dp(36), color=(0.6, 0.65, 0.72, 1)))
+        root.add_widget(
+            _wrapped(
+                _label(t("connect.stamp.hint", max=f"{MAX_STAMP_COST:g}")),
+                height=dp(36),
+                color=(0.6, 0.65, 0.72, 1),
+            )
+        )
         self._stamp_changed(self.stamp_mode, self.stamp_mode.text)
 
         root.add_widget(_label(t("connect.forwards.title"), size_hint_y=None, height=dp(24)))
@@ -836,7 +844,7 @@ class SessionScreen(Screen):
         session = snapshot.get("session") or {}
         transport = snapshot.get("transport") or {}
         state = session.get("state", "idle")
-        self.state.text = _state_text(state)
+        self.state.text = _state_text(state, stamp_cost=session.get("stamp_cost"))
         self.link.text = t("session.link.active") if session.get("link") else t("session.link.inactive")
         if transport.get("shared_instance"):
             self.transport.text = t("session.transport", port=transport.get("port"))
@@ -993,6 +1001,7 @@ class PortfwdApp(App):
         return bool(session.get("wanted")) or session.get("state") in (
             "resolving",
             "linking",
+            "stamping",
             "probing",
             "listening",
             "reconnecting",
@@ -1049,8 +1058,10 @@ class PortfwdApp(App):
         if self.screens.current == "session":
             self.session_screen.render(snapshot)
         elif self.screens.current == "connect":
-            if state in ("resolving", "linking", "probing"):
-                self.connect_screen.set_status(_state_text(state), "transient")
+            if state in ("resolving", "linking", "stamping", "probing"):
+                self.connect_screen.set_status(
+                    _state_text(state, stamp_cost=session.get("stamp_cost")), "transient"
+                )
             elif state == "reconnecting":
                 self.connect_screen.set_status(t("connect.status.connecting"), "transient")
             elif session.get("retry_in") is not None:
@@ -1123,6 +1134,8 @@ class PortfwdApp(App):
             )
         if kind == "link_lost":
             return t("log.link_lost")
+        if kind == "link_refresh":
+            return t("log.link_refresh")
         if kind == "transport":
             return t("log.transport", state=event.get("state"))
         if kind == "error":

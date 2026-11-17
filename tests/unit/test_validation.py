@@ -1,5 +1,6 @@
 import pytest
 from portfwd_android.validation import (
+    MAX_STAMP_COST,
     ValidationError,
     duplicate_forward_names,
     validate_config,
@@ -11,6 +12,7 @@ from portfwd_android.validation import (
     validate_stamp_config,
     validate_stamp_mode,
 )
+from rns_portfwd.constants import MAX_LINK_STAMP_COST
 
 
 def test_valid_config_is_normalised():
@@ -184,8 +186,9 @@ def test_non_cost_modes_ignore_the_cost(mode):
         ("12.5", 12.5),
         (0, 0.0),
         ("0", 0.0),
-        (40, 40.0),
-        (40.0, 40.0),
+        (16, 16.0),
+        (16.0, 16.0),
+        ("16", 16.0),
     ],
 )
 def test_custom_stamp_cost_accepts_the_valid_range(cost, expected):
@@ -194,13 +197,35 @@ def test_custom_stamp_cost_accepts_the_valid_range(cost, expected):
 
 @pytest.mark.parametrize(
     "cost",
-    [None, True, False, "nope", float("nan"), float("inf"), float("-inf"), -1, 40.1, 100],
+    [
+        None,
+        True,
+        False,
+        "nope",
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        -1,
+        16.1,
+        40,
+        100,
+    ],
 )
 def test_custom_stamp_cost_rejects_invalid_values(cost):
     with pytest.raises(ValidationError) as error:
         validate_stamp_config("cost", cost)
     assert error.value.code == "config"
     assert error.value.field == "stamp_cost"
+
+
+def test_custom_stamp_cost_is_capped_below_the_vendor_bound():
+    # Cost N needs about 2**N attempts, so the vendor bound of 40 would mean
+    # days of work on a phone; the app stops offering it.
+    assert validate_stamp_config("cost", MAX_STAMP_COST) == ("cost", MAX_STAMP_COST)
+    with pytest.raises(ValidationError) as error:
+        validate_stamp_config("cost", MAX_STAMP_COST + 1)
+    assert "between 0 and" in str(error.value)
+    assert MAX_STAMP_COST < MAX_LINK_STAMP_COST
 
 
 def test_stamp_config_rejects_an_unknown_mode():

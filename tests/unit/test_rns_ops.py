@@ -397,3 +397,50 @@ def test_probe_is_cancelled_while_waiting_to_retry(monkeypatch):
         )
 
     assert len(requests.payloads) == 1
+
+
+def test_open_link_calls_on_stamp_with_the_effective_cost(monkeypatch, fake_rns):
+    order = []
+    _patch_destination(monkeypatch, order)
+    monkeypatch.setattr(rns_ops, "configure_stamping", lambda *a, **k: 12.0)
+    original_init = FakeLink.__init__
+
+    def recording_init(self, destination, established_callback=None, closed_callback=None):
+        order.append("link")
+        original_init(self, destination, established_callback, closed_callback)
+
+    monkeypatch.setattr(FakeLink, "__init__", recording_init)
+
+    rns_ops.open_link(
+        object(),
+        1.0,
+        server_hash=b"h" * 32,
+        stamp_mode="auto",
+        on_stamp=lambda cost: order.append(("stamp", cost)),
+    )
+
+    # The stamp report precedes both the destination and the Link, i.e. it is
+    # published before the proof-of-work can start.
+    assert order == [("stamp", 12.0), "destination", "link"]
+
+
+def test_open_link_skips_on_stamp_when_no_stamp_is_generated(monkeypatch, fake_rns):
+    _patch_destination(monkeypatch, [])
+    monkeypatch.setattr(rns_ops, "configure_stamping", lambda *a, **k: 0.0)
+    seen = []
+
+    rns_ops.open_link(object(), 1.0, server_hash=b"h" * 32, on_stamp=seen.append)
+
+    assert seen == []
+
+
+def test_open_link_survives_a_failing_on_stamp_callback(monkeypatch, fake_rns):
+    _patch_destination(monkeypatch, [])
+    monkeypatch.setattr(rns_ops, "configure_stamping", lambda *a, **k: 8.0)
+
+    def broken(_cost):
+        raise RuntimeError("ui is gone")
+
+    link = rns_ops.open_link(object(), 1.0, server_hash=b"h" * 32, on_stamp=broken)
+
+    assert link is FakeLink.instances[-1]

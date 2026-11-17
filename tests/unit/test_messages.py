@@ -92,7 +92,7 @@ def test_stamp_and_identity_errors_are_translated():
 def test_stamp_config_fields_have_their_own_messages():
     assert error_text("config", field="stamp_mode") == "Modo de stamping no válido."
     assert error_text("config", field="stamp_cost") == (
-        "El coste de stamping debe ser un número entre 0 y 40."
+        "El coste de stamping debe ser un número entre 0 y 16."
     )
 
 
@@ -107,7 +107,10 @@ def test_stamp_config_fields_use_their_own_keys(monkeypatch):
     error_text("config", field="stamp_mode")
     error_text("config", field="stamp_cost")
 
-    assert calls == [("error.stamp_mode", {}), ("error.stamp_cost", {})]
+    assert calls == [
+        ("error.stamp_mode", {}),
+        ("error.stamp_cost", {"max": "16"}),
+    ]
 
 
 
@@ -119,3 +122,17 @@ def test_unknown_code_keeps_diagnostic_code():
 def test_state_text_falls_back_to_raw_value():
     assert state_text("listening") == "Escuchando"
     assert state_text("custom") == "custom"
+
+
+def test_state_text_reports_the_stamp_cost_while_generating():
+    assert state_text("stamping", stamp_cost=8) == "Generando stamp del enlace (coste 8)…"
+    assert state_text("stamping", stamp_cost=12.5) == "Generando stamp del enlace (coste 12.5)…"
+    assert state_text("stamping") == "Generando stamp del enlace (coste ?)…"
+
+
+def test_state_text_accepts_a_session_snapshot_splat():
+    snapshot = {"state": "stamping", "stamp_cost": 8.0, "retry_in": None}
+
+    assert state_text(snapshot["state"], **snapshot) == (
+        "Generando stamp del enlace (coste 8)…"
+    )

@@ -62,6 +62,18 @@ in `app/rns_portfwd/` (commit `ee2068a`). The app targets API 33, min API 24,
   attempt. An incapable local Reticulum is a terminal `stamp_unsupported`
   error, never a retry loop. Stamp generation happens in the session worker
   thread; on Android it forks workers (`Stamps.job_android`).
+  A custom cost is capped at 16 by `validation.MAX_STAMP_COST` (cost N needs
+  about 2**N attempts, so the vendor bound of 40 is days of work on a phone);
+  `auto` still follows any advertised cost. `open_link(on_stamp=…)` reports the
+  resolved cost before the `Link` is built so the session can publish the
+  `stamping` state instead of an indeterminate "Opening Link…".
+- **A Link that never carried a stream is rebuilt before its first use.** The
+  vendored server tears down any Link that has not opened a stream within
+  `--auth-timeout` (30 s by default), and neither `/probe` nor a Reticulum
+  keepalive cancels that timer. `Session._wait_link()` therefore refreshes an
+  unused Link older than `idle_refresh` (20 s default, `--idle-refresh` in the
+  harness) through the normal reconnect path, and marks the Link as used once
+  it is handed to a connection; a used Link is never refreshed.
 - **UI strings** go through `portfwd_android.i18n.t()`; server names, hashes,
   backend names and server error strings are never translated.
 - **Manifest invariants**: `android:allowBackup="false"`, the
@@ -119,10 +131,11 @@ openspec validate add-client-identity-and-stamping --strict
 openspec validate --all --strict
 ```
 
-Current verification: 196 tests pass (171 unit, 25 integration), ruff clean,
-OpenSpec strict valid, every task of `add-client-identity-and-stamping`
-complete, including the device pass (allow-list + stamping forward, anonymous
-rejection and reconnect after a shared-instance restart).
+Current verification: 214 tests pass (187 unit, 27 integration), ruff clean,
+OpenSpec strict valid. `add-client-identity-and-stamping` is complete,
+including the device pass (allow-list + stamping forward, anonymous rejection
+and reconnect after a shared-instance restart). `harden-stamp-cost-and-idle-link`
+adds the 16-cost cap, the `stamping` state and the unused-Link refresh.
 
 ## Build notes
 

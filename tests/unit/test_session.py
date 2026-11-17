@@ -589,3 +589,152 @@ def test_stamp_unsupported_is_terminal_and_not_retried(monkeypatch):
     assert "session_retry" not in published
     assert published[-1] == "session_state"
 
+
+
+class StubMux:
+    """Stand-in for a Mux: `_wait_link` only hands it over."""
+
+    def __init__(self, label):
+        self.label = label
+
+
+def _install_link(session, mux, age=0.0, used=False):
+    with session._lock:
+        session.link = object()
+        session.mux = mux
+        session.link_ready = True
+        session._link_since = session_module.time.monotonic() - age
+        session._link_used = used
+        session._refreshing = False
+    return session.link
+
+
+def test_a_recent_handoff_postpones_the_refresh():
+    session = make_session(idle_refresh=20.0, connect_timeout=1.0)
+    mux = StubMux("first")
+    _install_link(session, mux, age=25.0)
+    # Another connection was served on this Link a moment ago, so this one must
+    # not tear the Link down underneath it.
+    session._last_handoff = session_module.time.monotonic()
+
+    assert session._wait_link() is mux
+
+
+def test_a_handed_off_link_still_refreshes_when_it_never_opened_a_stream():
+    session = make_session(idle_refresh=20.0)
+    _install_link(session, StubMux("first"), age=25.0)
+    session._last_handoff = session_module.time.monotonic() - 21.0
+
+    # A connection that was handed the Link but never sent an OPEN must not
+    # stop the next one from refreshing it.
+    assert session._link_used is False
+    assert session._link_age_locked() >= 20.0
+
+
+def test_stamp_state_carries_the_effective_cost():
+    session = make_session()
+
+    session._stamp_started(8)
+
+    assert session.snapshot()["state"] == "stamping"
+    assert session.snapshot()["stamp_cost"] == 8.0
+    published = [kwargs for args, kwargs in session.engine.events if args and args[1] == "session_state"]
+    assert published[-1]["state"] == "stamping"
+    assert published[-1]["stamp_cost"] == 8.0
+    assert session.active is True
+
+
+def test_stamp_state_is_skipped_after_stop():
+    session = make_session()
+    session._stop.set()
+
+    session._stamp_started(8)
+
+    assert session.snapshot()["state"] == "idle"
+    assert session.engine.events == []
+
+
+def test_wait_link_returns_a_fresh_link_without_refreshing(monkeypatch):
+    session = make_session(idle_refresh=20.0)
+    mux = StubMux("first")
+    link = _install_link(session, mux, age=5.0)
+    closes = []
+    monkeypatch.setattr(session_module.rns_ops, "close_link", closes.append)
+
+    assert session._wait_link() is mux
+    assert closes == []
+    assert link is not None
+    # The hand-off alone does not mark the Link as used: only an OPEN does.
+    assert session._link_used is False
+    assert session._last_handoff is not None
+
+
+def test_wait_link_refreshes_an_unused_stale_link_once(monkeypatch):
+    session = make_session(idle_refresh=1.0, connect_timeout=5.0)
+    stale_mux = StubMux("stale")
+    stale_link = _install_link(session, stale_mux, age=5.0)
+    closes = []
+    monkeypatch.setattr(session_module.rns_ops, "close_link", closes.append)
+    result = {}
+
+    worker = threading.Thread(target=lambda: result.setdefault("mux", session._wait_link()))
+    worker.start()
+    deadline = session_module.time.monotonic() + 3.0
+    while not session._link_lost.is_set() and session_module.time.monotonic() < deadline:
+        session_module.time.sleep(0.01)
+
+    assert session._link_lost.is_set() is True
+    assert closes == [stale_link]
+    fresh_mux = StubMux("fresh")
+    with session._lock:
+        session.link = object()
+        session.mux = fresh_mux
+        session.link_ready = True
+        session._link_since = session_module.time.monotonic()
+        session._link_used = False
+        session._refreshing = False
+    worker.join(timeout=5)
+
+    assert result["mux"] is fresh_mux
+    assert closes == [stale_link]
+
+
+def test_concurrent_waiters_share_one_refresh(monkeypatch):
+    session = make_session(idle_refresh=1.0, connect_timeout=5.0)
+    stale_link = _install_link(session, StubMux("stale"), age=5.0)
+    closes = []
+    monkeypatch.setattr(session_module.rns_ops, "close_link", closes.append)
+    results = []
+    workers = [
+        threading.Thread(target=lambda: results.append(session._wait_link())) for _ in range(3)
+    ]
+    for worker in workers:
+        worker.start()
+    deadline = session_module.time.monotonic() + 3.0
+    while not session._link_lost.is_set() and session_module.time.monotonic() < deadline:
+        session_module.time.sleep(0.01)
+
+    fresh_mux = StubMux("fresh")
+    with session._lock:
+        session.link = object()
+        session.mux = fresh_mux
+        session.link_ready = True
+        session._link_since = session_module.time.monotonic()
+        session._link_used = False
+        session._refreshing = False
+    for worker in workers:
+        worker.join(timeout=5)
+
+    assert closes == [stale_link]
+    assert results == [fresh_mux] * 3
+
+
+def test_wait_link_never_refreshes_a_used_link(monkeypatch):
+    session = make_session(idle_refresh=1.0, connect_timeout=1.0)
+    mux = StubMux("used")
+    _install_link(session, mux, age=3600.0, used=True)
+    closes = []
+    monkeypatch.setattr(session_module.rns_ops, "close_link", closes.append)
+
+    assert session._wait_link() is mux
+    assert closes == []

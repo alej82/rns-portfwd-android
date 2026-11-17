@@ -78,10 +78,21 @@ def open_link(
     client_identity=None,
     stamp_mode="auto",
     stamp_cost=None,
+    on_stamp=None,
     logger=None,
 ):
     if server_hash is not None:
-        configure_stamping(server_hash, stamp_mode, stamp_cost, logger)
+        cost = configure_stamping(server_hash, stamp_mode, stamp_cost, logger)
+        # `configure_stamping` is the only place that knows the effective cost
+        # (an `auto` profile follows whatever the server advertises), and stamp
+        # generation happens inside the Link construction below, so report it
+        # here, before the Link is created.
+        if cost and on_stamp is not None:
+            try:
+                on_stamp(cost)
+            except Exception as error:  # pragma: no cover - UI must not break the Link
+                if logger is not None:
+                    logger.debug("could not report the link stamp cost: %s", error)
     destination = make_out_destination(identity)
     established = threading.Event()
     closed = threading.Event()

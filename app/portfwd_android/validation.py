@@ -11,6 +11,13 @@ _MIN_PORT = 1024
 _MAX_PORT = 65535
 PROTOCOLS = ("tcp", "udp")
 STAMP_MODES = ("auto", "off", "cost")
+# Cost N needs about 2**N stamp attempts, so the vendor bound of 40 is days of
+# work on a phone. The app caps the manual override at 16 (about 65k attempts,
+# well under a second); automatic mode still follows whatever cost the server
+# advertises, because that value is not user input.
+MAX_STAMP_COST = 16.0
+if MAX_STAMP_COST > MAX_LINK_STAMP_COST:  # pragma: no cover - vendor drift guard
+    raise RuntimeError("the app stamp cap exceeds the vendor bound")
 
 
 class ValidationError(ValueError):
@@ -86,7 +93,7 @@ def validate_stamp_mode(value):
 
 
 def validate_stamp_config(mode, cost):
-    """Return ``(mode, None)`` for auto/off, or ``(mode, float 0..40)`` for cost."""
+    """Return ``(mode, None)`` for auto/off, or ``(mode, float 0..16)`` for cost."""
     resolved = validate_stamp_mode(mode)
     if resolved != "cost":
         return resolved, None
@@ -104,9 +111,9 @@ def validate_stamp_config(mode, cost):
             code="config",
             field="stamp_cost",
         ) from None
-    if not math.isfinite(value) or not 0.0 <= value <= MAX_LINK_STAMP_COST:
+    if not math.isfinite(value) or not 0.0 <= value <= MAX_STAMP_COST:
         raise ValidationError(
-            f"link stamp cost must be between 0 and {MAX_LINK_STAMP_COST:g}",
+            f"link stamp cost must be between 0 and {MAX_STAMP_COST:g}",
             code="config",
             field="stamp_cost",
         )

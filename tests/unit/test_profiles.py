@@ -191,9 +191,21 @@ def test_upsert_normalises_an_invalid_stamp_mode(tmp_path):
     assert entry["stamp_mode"] == "auto"
     assert entry["stamp_cost"] is None
 
-    over_range = store.upsert("b" * 32, "Two", _forwards(), stamp_mode="cost", stamp_cost=55)
+    over_range = store.upsert(
+        "b" * 32, "Two", _forwards(), stamp_mode="cost", stamp_cost=55
+    )
     assert over_range["stamp_mode"] == "auto"
     assert over_range["stamp_cost"] is None
+
+    # The app caps a custom cost far below the vendor bound of 40: at cost 40
+    # the stamp would take days, so a stored value of 17 or 40 degrades to auto
+    # instead of resurrecting the hang.
+    for rejected in (17, 40):
+        entry = store.upsert(
+            "c" * 32, "Three", _forwards(), stamp_mode="cost", stamp_cost=rejected
+        )
+        assert entry["stamp_mode"] == "auto"
+        assert entry["stamp_cost"] is None
 
 
 def test_stored_invalid_stamp_config_is_normalised_to_auto(tmp_path):
@@ -203,16 +215,20 @@ def test_stored_invalid_stamp_config_is_normalised_to_auto(tmp_path):
             [
                 {"id": "a", "hash": "a" * 32, "stamp_mode": "turbo", "stamp_cost": 3},
                 {"id": "b", "hash": "b" * 32, "stamp_mode": "cost"},
+                {"id": "d", "hash": "d" * 32, "stamp_mode": "cost", "stamp_cost": 40},
                 {"id": "c", "hash": "c" * 32, "stamp_mode": "cost", "stamp_cost": 3},
             ]
         )
     )
     store = ProfileStore(str(path))
 
-    first, second, third = (store.get(profile_id) for profile_id in ("a", "b", "c"))
+    first, second, third, fourth = (
+        store.get(profile_id) for profile_id in ("a", "b", "c", "d")
+    )
     assert (first["stamp_mode"], first["stamp_cost"]) == ("auto", None)
     assert (second["stamp_mode"], second["stamp_cost"]) == ("auto", None)
     assert (third["stamp_mode"], third["stamp_cost"]) == ("cost", 3.0)
+    assert (fourth["stamp_mode"], fourth["stamp_cost"]) == ("auto", None)
 
 
 def test_identify_requires_a_literal_true(tmp_path):

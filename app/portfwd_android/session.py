@@ -28,6 +28,12 @@ from .validation import ValidationError
 _MAX_UDP_READ = 65536
 _MAX_UDP_PENDING = 32
 _MSG_TRUNC = getattr(socket, "MSG_TRUNC", 0)
+# The vendored server tears down any Link that has not opened an application
+# stream within `--auth-timeout` (30 s by default); its timer is cancelled by
+# the first successful stream OPEN, and neither a `/probe` nor a Reticulum
+# keepalive cancels it. A session that sits unused therefore has to rebuild its
+# Link before the first forward, with some margin under the server default.
+_LINK_IDLE_REFRESH = 20.0
 
 
 class Retryable(RuntimeError):
@@ -77,6 +83,7 @@ class Session:
         client_identity=None,
         stamp_mode="auto",
         stamp_cost=None,
+        idle_refresh=None,
     ):
         self.engine = engine
         self.server_hash = server_hash
@@ -96,6 +103,9 @@ class Session:
         self.client_identity = client_identity
         self.stamp_mode = stamp_mode
         self.stamp_cost = stamp_cost
+        self.idle_refresh = (
+            _LINK_IDLE_REFRESH if idle_refresh is None else max(0.0, float(idle_refresh))
+        )
 
         self.state = "idle"
         self.wanted = False
@@ -108,6 +118,11 @@ class Session:
         self.link = None
         self.mux = None
         self.identity = None
+        self._link_since = None
+        self._last_handoff = None
+        self._link_used = False
+        self._refreshing = False
+        self.effective_stamp_cost = None
         self.listeners = []
         self._accept_threads = []
         self._active = {}
@@ -150,7 +165,14 @@ class Session:
 
     @property
     def active(self):
-        return self.wanted or self.state in ("resolving", "linking", "probing", "listening", "reconnecting")
+        return self.wanted or self.state in (
+            "resolving",
+            "linking",
+            "stamping",
+            "probing",
+            "listening",
+            "reconnecting",
+        )
 
     def _publish(self, event_type, **fields):
         self.engine._publish_session(self, event_type, **fields)
@@ -217,6 +239,8 @@ class Session:
     def _establish(self, initial=True):
         # Re-resolve on every attempt: after a shared-instance outage the
         # cached identity is still valid, but the RNS path table is not.
+        with self._lock:
+            self.effective_stamp_cost = None
         self._set_state("resolving", retry_attempt=self.retry_attempt)
         try:
             self.identity = rns_ops.resolve_identity(
@@ -236,12 +260,16 @@ class Session:
                 client_identity=self.client_identity,
                 stamp_mode=self.stamp_mode,
                 stamp_cost=self.stamp_cost,
+                on_stamp=self._stamp_started,
                 logger=self.logger,
             )
         except rns_ops.StampUnsupported as error:
             raise Terminal("stamp_unsupported", str(error)) from None
         except ResolutionError as error:
             raise Retryable("link_failed", str(error), "link") from None
+        # The server starts its authentication timer when the Link is
+        # established, not when the probe finishes, so age it from here.
+        established_at = time.monotonic()
         with self._lock:
             self.link = link
             self.link_ready = False
@@ -290,6 +318,10 @@ class Session:
         with self._lock:
             self.mux = mux
             self.link_ready = True
+            self._link_since = established_at
+            self._last_handoff = None
+            self._link_used = False
+            self._refreshing = False
             self._link_lost.clear()
             self.error = None
             self.error_code = None
@@ -332,6 +364,11 @@ class Session:
                 )
 
     def _sleep_retry(self, attempt, code):
+        with self._lock:
+            # A failed stamping attempt must not keep the UI on
+            # "Generating link stamp…" for the whole backoff.
+            if self.state == "stamping":
+                self.state = "linking"
         delay = _jittered(attempt)
         deadline = time.monotonic() + delay
         with self._lock:
@@ -600,6 +637,7 @@ class Session:
                 # `_active` and the stream counter through `_stream_closed`.
                 session.abort(f"could not send OPEN: {error}", send_close=False)
                 return
+            self._note_stream_sent()
 
             if not self._wait_opened(session):
                 session.abort("open timeout")
@@ -660,16 +698,85 @@ class Session:
                 daemon=True,
             ).start()
 
+    def _stamp_started(self, cost):
+        """Report the effective link-stamp cost while the Link is being built.
+
+        ``rns_ops.open_link`` calls this after the stamping configuration was
+        applied and before ``RNS.Link`` runs the proof-of-work, so the UI can
+        show progress instead of an indeterminate "Opening Link…".
+        """
+        if self._stop.is_set():
+            return
+        with self._lock:
+            self.effective_stamp_cost = float(cost)
+        self._set_state("stamping", stamp_cost=float(cost))
+
     def _wait_link(self):
         deadline = time.monotonic() + self.connect_timeout
         while not self._stop.is_set():
             with self._lock:
-                if self.link_ready and self.mux is not None:
-                    return self.mux
+                mux = self.mux if (self.link_ready and self.mux is not None) else None
+                link = self.link
+                if mux is not None:
+                    age = self._link_age_locked()
+                    stale = (
+                        not self._link_used
+                        and self.idle_refresh > 0
+                        and age is not None
+                        and age >= self.idle_refresh
+                    )
+                    if not stale:
+                        # Claiming the Link and returning it happen in the same
+                        # critical section: a concurrent waiter must not start
+                        # refreshing the Link this connection is about to use.
+                        self._last_handoff = time.monotonic()
+                        return mux
+                else:
+                    stale = False
+            if stale:
+                self._refresh_idle_link(link)
             if time.monotonic() >= deadline:
                 return None
             time.sleep(0.05)
         return None
+
+    def _link_age_locked(self):
+        """Age of the current Link, from its establishment or last use."""
+        if self._link_since is None:
+            return None
+        since = self._link_since
+        if self._last_handoff is not None and self._last_handoff > since:
+            since = self._last_handoff
+        return time.monotonic() - since
+
+    def _note_stream_sent(self):
+        """Mark the Link as used once an OPEN has actually left the app.
+
+        The server cancels its authentication timer at the first successful
+        stream, so a Link that reached this point must never be refreshed.
+        """
+        with self._lock:
+            self._link_used = True
+
+    def _refresh_idle_link(self, link):
+        """Rebuild a Link the server is about to expire, before first use."""
+        with self._lock:
+            if self._refreshing or link is None or self.link is not link:
+                return
+            if not self.link_ready:
+                return
+            self._refreshing = True
+            self.link_ready = False
+        # The activity log shows the translated `link_refresh` event instead.
+        self.logger.debug("refreshing the link before its first stream")
+        self._publish("link_refresh")
+        try:
+            rns_ops.close_link(link)
+        except Exception:
+            pass
+        # Even if the Link does not report its own close, the supervisor
+        # reconnects as soon as `link_ready` is false.
+        self._link_lost.set()
 
     def _wait_opened(self, stream):
         deadline = time.monotonic() + DEFAULT_OPEN_TIMEOUT
@@ -752,6 +859,7 @@ class Session:
                 # `_active` and the stream counter through `_stream_closed`.
                 stream.abort(f"could not send OPEN: {error}", send_close=False)
                 return
+            self._note_stream_sent()
 
             if not self._wait_opened(stream):
                 stream.abort("open timeout")
@@ -937,6 +1045,7 @@ class Session:
                 "error_params": dict(self.error_params or {}),
                 "link": bool(self.link_ready),
                 "server_hash": self.server_hash,
+                "stamp_cost": self.effective_stamp_cost,
                 "forwards": forwards,
                 "counters": {
                     "streams": len(self._active),

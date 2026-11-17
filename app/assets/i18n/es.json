@@ -40,8 +40,8 @@
   "connect.stamp.mode.auto": "Automático",
   "connect.stamp.mode.off": "Desactivado",
   "connect.stamp.mode.cost": "Coste personalizado",
-  "connect.stamp.cost": "Coste (0-40)",
-  "connect.stamp.hint": "Automático usa el coste que anuncia el servidor.",
+  "connect.stamp.cost": "Coste (0-{max})",
+  "connect.stamp.hint": "Automático usa el coste que anuncia el servidor; el coste personalizado llega hasta {max}.",
   "connect.actions.connect": "Conectar",
   "connect.actions.cancel": "Cancelar",
   "connect.actions.list": "Listar servicios",
@@ -161,8 +161,10 @@
   "error.password": "La contraseña no puede estar vacía.",
   "error.duplicates": "Dos reenvíos usan el mismo puerto local.",
   "error.stamp_mode": "Modo de stamping no válido.",
-  "error.stamp_cost": "El coste de stamping debe ser un número entre 0 y 40.",
+  "error.stamp_cost": "El coste de stamping debe ser un número entre 0 y {max}.",
   "error.stamp_unsupported": "Este servidor exige stamps de enlace, pero el Reticulum incluido no puede generarlos. Actualiza la app.",
   "error.identity_error": "No se pudo abrir la identidad del dispositivo.",
-  "connect.forwards.locked": "Detén la sesión activa antes de editar los reenvíos."
+  "connect.forwards.locked": "Detén la sesión activa antes de editar los reenvíos.",
+  "session.state.stamping": "Generando stamp del enlace (coste {cost})…",
+  "log.link_refresh": "Renovando el enlace inactivo"
 }

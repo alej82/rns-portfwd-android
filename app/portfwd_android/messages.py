@@ -1,4 +1,5 @@
 from .i18n import t
+from .validation import MAX_STAMP_COST
 
 
 def error_text(code, field=None, message=None, **params):
@@ -12,7 +13,10 @@ def error_text(code, field=None, message=None, **params):
         "stamp_mode",
         "stamp_cost",
     ):
-        return t(f"error.{field}")
+        key = f"error.{field}"
+        if field == "stamp_cost":
+            return t(key, max=f"{MAX_STAMP_COST:g}")
+        return t(key)
     mapping = {
         "config": "error.config",
         "busy": "error.busy",
@@ -53,7 +57,12 @@ def error_text(code, field=None, message=None, **params):
     return t(key)
 
 
-def state_text(state):
+def state_text(state, /, **params):
+    # `state` is positional-only so a caller can splat a session snapshot
+    # (which also carries a "state" key) without a duplicate-keyword TypeError.
+    if state == "stamping":
+        cost = params.get("stamp_cost")
+        return t("session.state.stamping", cost=f"{float(cost):g}" if cost else "?")
     key = {
         "idle": "session.state.idle",
         "resolving": "session.state.resolving",

@@ -36,6 +36,12 @@ def parse_args():
     )
     parser.add_argument("--stamp-mode", choices=("auto", "off", "cost"), default="auto")
     parser.add_argument("--stamp-cost", type=float, default=None)
+    parser.add_argument(
+        "--idle-refresh",
+        type=float,
+        default=None,
+        help="seconds before an unused Link is rebuilt (default 20, 0 disables)",
+    )
     parser.add_argument("--shared-port", type=int, default=37428)
     parser.add_argument("--control-port", type=int, default=37429)
     parser.add_argument("--udp-idle-timeout", type=float, default=None)
@@ -117,6 +123,7 @@ def main():
             forwards,
             args.list_password or None,
             identify=identify,
+            idle_refresh=args.idle_refresh,
             **stamp_options,
         )
     except ValidationError as error:
@@ -135,7 +142,7 @@ def main():
             for event in engine.drain_events():
                 if args.json:
                     print(json.dumps(event, ensure_ascii=False, sort_keys=True), flush=True)
-                elif event["type"] in ("error", "session_retry", "link_lost"):
+                elif event["type"] in ("error", "session_retry", "link_lost", "link_refresh"):
                     print(f"event {event['seq']} {event['type']}: {json.dumps(event, ensure_ascii=False)}", flush=True)
                 if event["type"] == "error":
                     return 2

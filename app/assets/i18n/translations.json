@@ -214,12 +214,12 @@
       "file": "app/main.py"
     },
     "connect.stamp.cost": {
-      "en": "Cost (0-40)",
+      "en": "Cost (0-{max})",
       "context": "Custom link stamp cost field",
       "file": "app/main.py"
     },
     "connect.stamp.hint": {
-      "en": "Automatic follows the cost the server advertises.",
+      "en": "Automatic follows the cost the server advertises; a custom cost goes up to {max}.",
       "context": "Explanation under the stamp mode selector",
       "file": "app/main.py"
     },
@@ -819,7 +819,7 @@
       "file": "app/main.py"
     },
     "error.stamp_cost": {
-      "en": "The stamp cost must be a number between 0 and 40.",
+      "en": "The stamp cost must be a number between 0 and {max}.",
       "context": "Link stamp cost validation",
       "file": "app/main.py"
     },
@@ -836,6 +836,16 @@
     "connect.forwards.locked": {
       "en": "Stop the active session before editing forwards.",
       "context": "Shown when forward editing is attempted during a session",
+      "file": "app/main.py"
+    },
+    "log.link_refresh": {
+      "en": "Refreshing the idle link",
+      "context": "Activity log",
+      "file": "app/main.py"
+    },
+    "session.state.stamping": {
+      "en": "Generating link stamp (cost {cost})…",
+      "context": "Session state while a link-request stamp is computed",
       "file": "app/main.py"
     }
   }

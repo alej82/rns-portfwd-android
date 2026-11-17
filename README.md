@@ -28,7 +28,11 @@ Current version: `0.2.0` · License: GPL-3.0-or-later · Target: Android 7.0+,
   hashes; the app shows the 32-hex hash so it can be copied to the server, and
   stays anonymous when the switch is off.
 - Automatic link-request stamping from the cost the server advertises, with a
-  per-profile override (automatic, disabled or a custom cost).
+  per-profile override (automatic, disabled or a custom cost up to 16), and a
+  visible «Generating link stamp (cost N)…» state while the proof-of-work runs.
+- A Link that has never carried a stream is rebuilt before its first forward
+  once it is older than 20 s, so a server's authentication timeout cannot
+  expire the Link while the app waits.
 - Foreground service, persistent notification, wake lock and a localized
   «Stop»/«Detener» action; the session survives screen-off and backgrounding.
 - Automatic path re-resolution and Link recovery after the shared-instance
@@ -117,7 +121,9 @@ device identity on every Link of that profile; press «Ver identidad» to read
 the 32-hex hash that the server needs in `--allow-identity SERVICE:HASH`.
 «Stamping de enlaces» defaults to «Automático», which follows the cost the
 server advertises; use «Desactivado» for diagnostics or «Coste personalizado»
-(0-40) when the announcement is missing.
+(0-16) when the announcement is missing. The cap is deliberate: cost N needs
+about 2**N stamp attempts, so 16 is a fraction of a second and 40 would be
+days; «Automático» still follows any advertised cost.
 
 `Listar servicios` needs the server's `--list-password`; each row shows the
 protocol and whether the service asks for a password. `Probar` validates one
@@ -168,8 +174,10 @@ python3 tools/headless_engine.py <hash> \
 
 `--udp-idle-timeout` shortens the datagram idle timeout for tests.
 `--identity PATH` identifies the Link with a saved identity (created if
-missing), and `--stamp-mode auto|off|cost` with `--stamp-cost <0-40>` mirrors
-the profile stamp controls.
+missing), `--stamp-mode auto|off|cost` with `--stamp-cost <0-16>` mirrors the
+profile stamp controls, and `--idle-refresh SECONDS` overrides the 20 s
+unused-Link refresh so a server with a short `--auth-timeout` can be tested
+quickly.
 
 ## Device verification
 
@@ -216,6 +224,12 @@ Evidence, logs and the checklist are in [`evidence/README.md`](evidence/README.m
 - Stamp cost is taken from the server announcement (portfwd app data or the
   native announce). If a server enforces stamps without advertising a cost,
   the connection times out; set a custom cost in the profile.
+- A server closes any Link that has not opened a stream within its
+  `--auth-timeout` (30 s default). The app rebuilds a Link that has never
+  carried a stream before the first forward, so a session left idle still
+  works; only a first forward that arrives in the last seconds before the
+  server deadline could hit the old race, which is why the refresh threshold
+  stays at 20 s.
 
 ## License
 

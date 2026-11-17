@@ -233,6 +233,7 @@ class Engine:
         identify=False,
         stamp_mode="auto",
         stamp_cost=None,
+        idle_refresh=None,
     ):
         try:
             resolved_hash, resolved_forwards, resolved_list = validate_config(
@@ -267,6 +268,7 @@ class Engine:
             client_identity=client_identity,
             stamp_mode=resolved_mode,
             stamp_cost=resolved_cost,
+            idle_refresh=idle_refresh,
         )
         with self._lock:
             self._session = session
@@ -493,6 +495,7 @@ class Engine:
                 "error_params": {},
                 "link": False,
                 "server_hash": None,
+                "stamp_cost": None,
                 "forwards": [],
                 "counters": {
                     "streams": 0,
