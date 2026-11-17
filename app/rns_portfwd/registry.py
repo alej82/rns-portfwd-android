@@ -37,9 +37,14 @@ class ServiceRegistry:
             return False
         return constant_time_equals(password, self._list_password)
 
-    def authenticate(self, name: str, password: str | None) -> Service | None:
+    def authenticate(
+        self, name: str, password: str | None, identity_hash: bytes | None = None
+    ) -> Service | None:
         service = self._services.get(name)
         if service is None:
+            dummy_compare(password)
+            return None
+        if service.allowed_identities and identity_hash not in service.allowed_identities:
             dummy_compare(password)
             return None
         if service.password is None:
@@ -51,15 +56,17 @@ class ServiceRegistry:
     def list_public(self) -> list[dict]:
         return [service.public() for service in self._services.values()]
 
-    def probe(self, name: str, password: str | None) -> dict | None:
-        service = self.authenticate(name, password)
+    def probe(
+        self, name: str, password: str | None, identity_hash: bytes | None = None
+    ) -> dict | None:
+        service = self.authenticate(name, password, identity_hash)
         if service is None:
             return None
         return service.public()
 
     def _limit_for(self, name: str) -> int:
         service = self._services.get(name)
-        if service is not None and service.password is None:
+        if service is not None and not service.is_restricted:
             return self._max_public_connections
         return self._max_connections
 

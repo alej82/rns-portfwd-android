@@ -22,6 +22,7 @@ from .constants import (
 )
 from .datagrams import DatagramSession
 from .discovery import (
+    configure_link_stamping,
     init_reticulum,
     parse_destination_hash,
     resolve_identity,
@@ -76,6 +77,28 @@ def link_request(link, path: str, data, timeout: float):
     return result.get("response")
 
 
+_IDENTITY_RETRY_DELAY = 1.0
+
+
+def probe_request(link, service: str, password: str, timeout: float, client_identity=None):
+    """Send ``/probe``, re-identifying once if the identity proof raced the request."""
+    response = link_request(
+        link, "/probe", {"service": service, "password": password}, timeout
+    )
+    if client_identity is None:
+        return response
+    if not isinstance(response, dict) or response.get("error") != "auth":
+        return response
+    try:
+        link.identify(client_identity)
+    except Exception:
+        pass
+    time.sleep(_IDENTITY_RETRY_DELAY)
+    return link_request(
+        link, "/probe", {"service": service, "password": password}, timeout
+    )
+
+
 class PortfwdClient:
     def __init__(
         self,
@@ -91,6 +114,9 @@ class PortfwdClient:
         compress: bool = True,
         udp_idle_timeout: float = DEFAULT_UDP_IDLE_TIMEOUT,
         verbosity: int = 0,
+        client_identity=None,
+        link_stamp_cost: float | None = None,
+        no_link_stamp: bool = False,
     ):
         self.server_hash = server_hash
         self.forwards = forwards
@@ -104,6 +130,9 @@ class PortfwdClient:
         self.compress = compress
         self.udp_idle_timeout = udp_idle_timeout
         self.verbosity = verbosity
+        self.client_identity = client_identity
+        self.link_stamp_cost = link_stamp_cost
+        self.no_link_stamp = no_link_stamp
 
         self._stop = threading.Event()
         self._link_ready = threading.Event()
@@ -159,10 +188,18 @@ class PortfwdClient:
     def _connect_once(self) -> None:
         if self._identity is None:
             raise ResolutionError("server identity is not resolved")
+        configure_link_stamping(
+            self.server_hash,
+            self.link_stamp_cost,
+            self.no_link_stamp,
+            self.logger,
+        )
         manager = LinkManager(
             self._identity,
             timeout=self.connect_timeout,
             on_closed=self._handle_link_closed,
+            client_identity=self.client_identity,
+            logger=self.logger,
         )
         link = manager.open()
         channel = link.get_channel()
@@ -225,11 +262,12 @@ class PortfwdClient:
         checked: dict[str, dict] = {}
         for forward in self.forwards:
             if forward.name not in checked:
-                response = link_request(
+                response = probe_request(
                     link,
-                    "/probe",
-                    {"service": forward.name, "password": forward.password or ""},
+                    forward.name,
+                    forward.password or "",
                     self.connect_timeout,
+                    self.client_identity,
                 )
                 if not isinstance(response, dict) or not response.get("ok"):
                     raise AuthError(
@@ -558,6 +596,9 @@ def run_list(
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
     wait_seconds: float = 0.0,
     refresh: float = 0.0,
+    client_identity=None,
+    link_stamp_cost: float | None = None,
+    no_link_stamp: bool = False,
 ) -> None:
     destination_hash = parse_destination_hash(server_hash_text)
     init_reticulum(config_dir, verbosity)
@@ -565,7 +606,15 @@ def run_list(
         identity = resolve_identity(
             destination_hash, max(path_timeout, wait_seconds)
         )
-        manager = LinkManager(identity, timeout=connect_timeout)
+        configure_link_stamping(
+            destination_hash, link_stamp_cost, no_link_stamp, logger
+        )
+        manager = LinkManager(
+            identity,
+            timeout=connect_timeout,
+            client_identity=client_identity,
+            logger=logger,
+        )
         link = manager.open()
         try:
             while True:
@@ -610,24 +659,33 @@ def run_probe(
     verbosity: int = 0,
     path_timeout: float = DEFAULT_PATH_TIMEOUT,
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+    client_identity=None,
+    link_stamp_cost: float | None = None,
+    no_link_stamp: bool = False,
 ) -> None:
     destination_hash = parse_destination_hash(server_hash_text)
     init_reticulum(config_dir, verbosity)
     try:
         identity = resolve_identity(destination_hash, path_timeout)
-        manager = LinkManager(identity, timeout=connect_timeout)
+        configure_link_stamping(
+            destination_hash, link_stamp_cost, no_link_stamp, logger
+        )
+        manager = LinkManager(
+            identity,
+            timeout=connect_timeout,
+            client_identity=client_identity,
+            logger=logger,
+        )
         link = manager.open()
         try:
-            response = link_request(
-                link,
-                "/probe",
-                {"service": service, "password": password},
-                connect_timeout,
+            response = probe_request(
+                link, service, password, connect_timeout, client_identity
             )
             if not isinstance(response, dict) or not response.get("ok"):
                 raise AuthError(
                     f"authentication failed for service {service!r}; "
-                    "the service may require --service-password"
+                    "the service may require --service-password or an allowed "
+                    "client identity (--identity)"
                 )
             public = response.get("service", {})
             print(

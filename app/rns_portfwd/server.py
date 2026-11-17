@@ -13,12 +13,16 @@ from .constants import (
     AUTH_FAILURE_DELAY,
     DEFAULT_AUTH_TIMEOUT,
     DEFAULT_BACKEND_TIMEOUT,
+    DEFAULT_HALF_OPEN_TIMEOUT,
+    DEFAULT_LINK_STAMP_COST,
     DEFAULT_MAX_CONNECTIONS_PER_PUBLIC,
     DEFAULT_MAX_CONNECTIONS_PER_SERVICE,
+    DEFAULT_MAX_HALF_OPEN,
     DEFAULT_MAX_LINKS,
     DEFAULT_MAX_STREAMS,
     DEFAULT_UDP_IDLE_TIMEOUT,
     DEFAULT_WINDOW,
+    IDENTITY_WAIT_TIMEOUT,
     MAX_AUTH_FAILURES,
     PROTOCOL_VERSION,
     ErrorCode,
@@ -31,7 +35,7 @@ from .discovery import (
     set_default_app_data,
 )
 from .mux import Mux
-from .protocol import register_message_types
+from .protocol import OpenMessage, register_message_types
 from .registry import ServiceRegistry
 from .streams import SessionBase, StreamSession
 
@@ -46,6 +50,9 @@ class LinkContext:
         self.closing = False
         self.opened = False
         self.reserved: dict[int, str] = {}
+        self.identity_hash: bytes | None = None
+        self.pending_opens: dict[int, OpenMessage] = {}
+        self.identity_timer: threading.Timer | None = None
 
 
 class PortfwdServer:
@@ -68,7 +75,11 @@ class PortfwdServer:
         auth_timeout: float = DEFAULT_AUTH_TIMEOUT,
         backend_timeout: float = DEFAULT_BACKEND_TIMEOUT,
         udp_idle_timeout: float = DEFAULT_UDP_IDLE_TIMEOUT,
+        identity_timeout: float = IDENTITY_WAIT_TIMEOUT,
         verbosity: int = 0,
+        link_stamp_cost: float = DEFAULT_LINK_STAMP_COST,
+        max_half_open: int = DEFAULT_MAX_HALF_OPEN,
+        half_open_timeout: float = DEFAULT_HALF_OPEN_TIMEOUT,
     ):
         self.services = services
         self.list_password = list_password
@@ -85,7 +96,11 @@ class PortfwdServer:
         self.auth_timeout = auth_timeout
         self.backend_timeout = backend_timeout
         self.udp_idle_timeout = udp_idle_timeout
+        self.identity_timeout = identity_timeout
         self.verbosity = verbosity
+        self.link_stamp_cost = link_stamp_cost
+        self.max_half_open = max_half_open
+        self.half_open_timeout = half_open_timeout
 
         self.registry = ServiceRegistry(
             services=services,
@@ -114,8 +129,18 @@ class PortfwdServer:
     def start(self) -> str:
         self.reticulum = init_reticulum(self.config_dir, self.verbosity)
         self.identity = load_or_create_identity(self.identity_path)
-        self.destination = make_in_destination(self.identity)
-        set_default_app_data(self.destination, self.name, self.list_password is not None)
+        self.destination = make_in_destination(
+            self.identity,
+            stamp_cost=self.link_stamp_cost,
+            max_half_open=self.max_half_open,
+            half_open_timeout=self.half_open_timeout,
+        )
+        set_default_app_data(
+            self.destination,
+            self.name,
+            self.list_password is not None,
+            self.link_stamp_cost,
+        )
         self.destination.set_max_request_size(16384)
         self.destination.set_link_established_callback(self._link_established)
         self.destination.register_request_handler(
@@ -169,6 +194,11 @@ class PortfwdServer:
             ctx.closing = True
             if ctx.timer is not None:
                 ctx.timer.cancel()
+            with self._lock:
+                if ctx.identity_timer is not None:
+                    ctx.identity_timer.cancel()
+                    ctx.identity_timer = None
+                ctx.pending_opens.clear()
             try:
                 if ctx.mux is not None:
                     ctx.mux.close_all("server shutting down", send_close=True)
@@ -223,6 +253,7 @@ class PortfwdServer:
         with self._lock:
             self._links[id(link)] = ctx
             self._link_ids[link.link_id] = ctx
+        link.set_remote_identified_callback(self._remote_identified)
         self.logger.debug("link established from %s", getattr(link, "link_id", b"").hex())
 
     def _auth_timeout(self, ctx: LinkContext) -> None:
@@ -247,6 +278,10 @@ class PortfwdServer:
         if ctx.mux is not None:
             ctx.mux.close_all("link lost", send_close=False)
         with self._lock:
+            if ctx.identity_timer is not None:
+                ctx.identity_timer.cancel()
+                ctx.identity_timer = None
+            ctx.pending_opens.clear()
             pending = list(ctx.reserved.items())
             ctx.reserved.clear()
         for _, service_name in pending:
@@ -263,38 +298,55 @@ class PortfwdServer:
     def _handle_open(self, ctx: LinkContext, message) -> None:
         if ctx.closing or self._stop.is_set() or ctx.mux is None:
             return
-        service = self.registry.authenticate(message.service, message.password)
+        service = self.registry.get(message.service)
+        if (
+            service is not None
+            and service.allowed_identities
+            and self._identity_hash(ctx) is None
+        ):
+            mux = ctx.mux
+            if not mux.reserve(message.stream_id):
+                self._send_error(ctx, message.stream_id, ErrorCode.LIMIT)
+                return
+            with self._lock:
+                if ctx.closing or self._stop.is_set():
+                    mux.release_reservation(message.stream_id)
+                    return
+                if self._identity_hash(ctx) is None:
+                    ctx.pending_opens[message.stream_id] = message
+                    self._start_identity_timer_locked(ctx)
+                    return
+            self._complete_open(ctx, message, reserved=True)
+            return
+        self._complete_open(ctx, message)
+
+    def _complete_open(self, ctx: LinkContext, message, *, reserved: bool = False) -> None:
+        if ctx.closing or self._stop.is_set() or ctx.mux is None:
+            if reserved and ctx.mux is not None:
+                ctx.mux.release_reservation(message.stream_id)
+            return
+        mux = ctx.mux
+        service = self.registry.authenticate(
+            message.service, message.password, self._identity_hash(ctx)
+        )
         if service is None:
-            close_link = ctx.tracker.record_failure()
-            self.logger.warning(
-                "authentication failed for service %r on link (attempt %d)",
-                message.service,
-                ctx.tracker.failures,
-            )
-
-            def delayed_error():
-                self._send_error(ctx, message.stream_id, ErrorCode.AUTH)
-                if close_link:
-                    try:
-                        ctx.link.teardown()
-                    except Exception:
-                        pass
-
-            timer = threading.Timer(AUTH_FAILURE_DELAY, delayed_error)
-            timer.daemon = True
-            timer.start()
+            self._reject_authentication(ctx, message, release_reservation=reserved)
             return
 
         if message.version != PROTOCOL_VERSION:
+            if reserved:
+                mux.release_reservation(message.stream_id)
             self._send_error(ctx, message.stream_id, ErrorCode.VERSION)
             return
 
         if not self.registry.acquire(service.name):
+            if reserved:
+                mux.release_reservation(message.stream_id)
             self.logger.warning("service %s reached its connection limit", service.name)
             self._send_error(ctx, message.stream_id, ErrorCode.LIMIT)
             return
 
-        if not ctx.mux.reserve(message.stream_id):
+        if not reserved and not mux.reserve(message.stream_id):
             self.registry.release(service.name)
             self._send_error(ctx, message.stream_id, ErrorCode.LIMIT)
             return
@@ -312,6 +364,129 @@ class PortfwdServer:
             name=f"open-{service.name}-{message.stream_id}",
             daemon=True,
         ).start()
+
+    def _reject_authentication(
+        self, ctx: LinkContext, message, *, release_reservation: bool = False
+    ) -> None:
+        """Report an auth failure exactly like a wrong password would."""
+        if release_reservation and ctx.mux is not None:
+            ctx.mux.release_reservation(message.stream_id)
+        close_link = ctx.tracker.record_failure()
+        self.logger.warning(
+            "authentication failed for service %r on link (attempt %d)",
+            message.service,
+            ctx.tracker.failures,
+        )
+        if ctx.identity_hash is not None:
+            self.logger.debug(
+                "rejected identity %s for service %r",
+                ctx.identity_hash.hex(),
+                message.service,
+            )
+
+        def delayed_error():
+            self._send_error(ctx, message.stream_id, ErrorCode.AUTH)
+            if close_link:
+                try:
+                    ctx.link.teardown()
+                except Exception:
+                    pass
+
+        timer = threading.Timer(AUTH_FAILURE_DELAY, delayed_error)
+        timer.daemon = True
+        timer.start()
+
+    def _identity_hash(self, ctx: LinkContext) -> bytes | None:
+        identity = None
+        getter = getattr(ctx.link, "get_remote_identity", None)
+        if callable(getter):
+            try:
+                identity = getter()
+            except Exception:
+                identity = None
+        identity_hash = getattr(identity, "hash", None)
+        if isinstance(identity_hash, bytes):
+            return identity_hash
+        return ctx.identity_hash
+
+    def _remote_identified(self, link, identity) -> None:
+        identity_hash = getattr(identity, "hash", None)
+        if not isinstance(identity_hash, bytes):
+            return
+        with self._lock:
+            ctx = self._links.get(id(link))
+            if ctx is None:
+                return
+            ctx.identity_hash = identity_hash
+            timer = ctx.identity_timer
+            ctx.identity_timer = None
+            pending = list(ctx.pending_opens.items())
+            ctx.pending_opens.clear()
+        if timer is not None:
+            timer.cancel()
+        self.logger.debug(
+            "link initiator identified as %s", identity_hash.hex()
+        )
+        for _, message in pending:
+            try:
+                self._complete_open(ctx, message, reserved=True)
+            except Exception:
+                self.logger.exception("could not complete a pending open")
+                if ctx.mux is not None:
+                    ctx.mux.release_reservation(message.stream_id)
+
+    def _start_identity_timer_locked(self, ctx: LinkContext) -> None:
+        """Start the single per-Link identity wait timer. Caller holds the lock."""
+        if ctx.identity_timer is not None or ctx.closing:
+            return
+        timer = threading.Timer(
+            self.identity_timeout, self._identity_timeout, args=(ctx,)
+        )
+        timer.daemon = True
+        ctx.identity_timer = timer
+        timer.start()
+
+    def _identity_timeout(self, ctx: LinkContext) -> None:
+        with self._lock:
+            ctx.identity_timer = None
+            if ctx.closing:
+                return
+            pending = list(ctx.pending_opens.items())
+            ctx.pending_opens.clear()
+            identity_hash = ctx.identity_hash or self._identity_hash(ctx)
+            if identity_hash is not None:
+                ctx.identity_hash = identity_hash
+        if not pending:
+            return
+        if identity_hash is not None:
+            # The remote_identified callback can be missed if the proof arrived
+            # before it was registered; the Link getter is authoritative.
+            self.logger.debug(
+                "identity proof found at identity timeout for %d pending open(s)",
+                len(pending),
+            )
+            for _, message in pending:
+                try:
+                    self._complete_open(ctx, message, reserved=True)
+                except Exception:
+                    self.logger.exception("could not complete a pending open")
+                    if ctx.mux is not None:
+                        ctx.mux.release_reservation(message.stream_id)
+            return
+        self.logger.warning(
+            "rejecting %d pending open(s): no identity proof received", len(pending)
+        )
+        for _, message in pending:
+            if ctx.closing or self._stop.is_set():
+                if ctx.mux is not None:
+                    ctx.mux.release_reservation(message.stream_id)
+                continue
+            try:
+                self._reject_authentication(ctx, message, release_reservation=True)
+            except Exception:
+                self.logger.exception("could not reject a pending open")
+                if ctx.mux is not None:
+                    ctx.mux.release_reservation(message.stream_id)
 
     def _release_reservation(self, ctx: LinkContext, stream_id: int) -> None:
         with self._lock:
@@ -480,7 +655,9 @@ class PortfwdServer:
             password = data.get("password")
         if not isinstance(service_name, str) or not isinstance(password, str):
             return {"ok": False, "error": "auth"}
-        public = self.registry.probe(service_name, password)
+        public = self.registry.probe(
+            service_name, password, getattr(remote_identity, "hash", None)
+        )
         if public is None:
             import time
 

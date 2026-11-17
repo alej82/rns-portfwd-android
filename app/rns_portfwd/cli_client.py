@@ -18,6 +18,7 @@ from .config import (
     resolve_list_password,
     resolve_probe_password,
     validate_forwards,
+    validate_link_stamp_cost,
 )
 from .constants import (
     DEFAULT_CONNECT_TIMEOUT,
@@ -29,9 +30,11 @@ from .constants import (
     MAX_CREDIT,
     STREAM_ID_MAX,
 )
-from .discovery import parse_destination_hash
+from .discovery import load_or_create_identity, parse_destination_hash
 from .errors import ConfigError, PortfwdError
 from .logging import register_secret, setup_logging
+
+DEFAULT_CLIENT_IDENTITY = "~/.config/rns-portfwd/client.id"
 
 EXAMPLES = """\
 examples:
@@ -41,6 +44,12 @@ examples:
   rns-portfwd-client forward --server <hash> --forward-udp dns:5353:s3cret
   rns-portfwd-client forward --server <hash> --forward-public web:8080
   rns-portfwd-client forward --server <hash> --forward ssh:2222:- --secrets-fd 3
+  rns-portfwd-client forward --server <hash> --link-stamp-cost 12.5 \\
+      --forward ssh:2222:s3cret
+  rns-portfwd-client list --server <hash> --no-link-stamp --list-password listpass
+  rns-portfwd-client identity --identity ~/.config/rns-portfwd/client.id
+  rns-portfwd-client forward --server <hash> --identity ~/.config/rns-portfwd/client.id \\
+      --forward ssh:2222:s3cret
 """
 
 
@@ -53,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", default=None, help="Reticulum configuration directory")
     parser.add_argument(
+        "--identity",
+        default=None,
+        metavar="PATH",
+        help="persistent client identity file; identifies on every Link",
+    )
+    parser.add_argument(
         "--path-timeout",
         type=float,
         default=DEFAULT_PATH_TIMEOUT,
@@ -63,6 +78,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_CONNECT_TIMEOUT,
         help="seconds to wait for the Link or a free stream slot",
+    )
+    parser.add_argument(
+        "--link-stamp-cost",
+        type=float,
+        default=None,
+        metavar="COST",
+        help="override the server's advertised link-request stamp cost",
+    )
+    parser.add_argument(
+        "--no-link-stamp",
+        action="store_true",
+        default=False,
+        help="do not stamp link requests (diagnostic; cannot reach a stamping server)",
     )
     parser.add_argument(
         "--password-stdin",
@@ -81,8 +109,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", default=argparse.SUPPRESS)
+    common.add_argument("--identity", default=argparse.SUPPRESS, metavar="PATH")
     common.add_argument("--path-timeout", type=float, default=argparse.SUPPRESS)
     common.add_argument("--connect-timeout", type=float, default=argparse.SUPPRESS)
+    common.add_argument(
+        "--link-stamp-cost", type=float, default=argparse.SUPPRESS, metavar="COST"
+    )
+    common.add_argument(
+        "--no-link-stamp", action="store_true", default=argparse.SUPPRESS
+    )
     common.add_argument("--password-stdin", action="store_true", default=argparse.SUPPRESS)
     common.add_argument("--secrets-fd", type=int, default=argparse.SUPPRESS)
     common.add_argument("-v", "--verbose", action="count", default=argparse.SUPPRESS)
@@ -155,6 +190,17 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--service", required=True)
     probe.add_argument("--service-password", default=None)
 
+    identity = subparsers.add_parser(
+        "identity",
+        help="print the client identity hash to add to a server allow-list",
+    )
+    identity.add_argument(
+        "--identity",
+        default=argparse.SUPPRESS,
+        metavar="PATH",
+        help=f"identity file (default: {DEFAULT_CLIENT_IDENTITY})",
+    )
+
     return parser
 
 
@@ -163,6 +209,33 @@ def _validate_common(args) -> None:
         raise ConfigError("--path-timeout must be positive")
     if args.connect_timeout <= 0:
         raise ConfigError("--connect-timeout must be positive")
+    link_stamp_cost = getattr(args, "link_stamp_cost", None)
+    no_link_stamp = getattr(args, "no_link_stamp", False)
+    if link_stamp_cost is not None and no_link_stamp:
+        raise ConfigError(
+            "--link-stamp-cost and --no-link-stamp are mutually exclusive"
+        )
+    if link_stamp_cost is not None:
+        link_stamp_cost = validate_link_stamp_cost(link_stamp_cost)
+        args.link_stamp_cost = link_stamp_cost
+
+
+def _load_client_identity(args, logger):
+    path = getattr(args, "identity", None)
+    if path is None:
+        return None
+    if not str(path).strip():
+        raise ConfigError("--identity must not be empty")
+    identity = load_or_create_identity(path)
+    logger.debug("using client identity %s", identity.hash.hex())
+    return identity
+
+
+def _run_identity_command(args) -> int:
+    path = getattr(args, "identity", None) or DEFAULT_CLIENT_IDENTITY
+    identity = load_or_create_identity(path)
+    print(identity.hash.hex(), flush=True)
+    return EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -171,6 +244,9 @@ def main(argv: list[str] | None = None) -> int:
     logger = setup_logging(args.verbose)
     try:
         _validate_common(args)
+        if args.command == "identity":
+            return _run_identity_command(args)
+
         document, source_used = read_secret_source(args.password_stdin, args.secrets_fd)
 
         if args.command == "forward":
@@ -189,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
             for forward in forwards:
                 register_secret(forward.password)
             server_hash = parse_destination_hash(args.server)
+            client_identity = _load_client_identity(args, logger)
             client = PortfwdClient(
                 server_hash=server_hash,
                 forwards=forwards,
@@ -202,6 +279,9 @@ def main(argv: list[str] | None = None) -> int:
                 compress=not args.no_compress,
                 udp_idle_timeout=args.udp_idle_timeout,
                 verbosity=args.verbose,
+                client_identity=client_identity,
+                link_stamp_cost=args.link_stamp_cost,
+                no_link_stamp=args.no_link_stamp,
             )
 
             def on_signal(signum, frame):
@@ -222,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.list_password, document, source_used
             )
             register_secret(list_password)
+            client_identity = _load_client_identity(args, logger)
             run_list(
                 server_hash_text=args.server,
                 list_password=list_password,
@@ -232,6 +313,9 @@ def main(argv: list[str] | None = None) -> int:
                 connect_timeout=args.connect_timeout,
                 wait_seconds=args.wait,
                 refresh=args.refresh,
+                client_identity=client_identity,
+                link_stamp_cost=args.link_stamp_cost,
+                no_link_stamp=args.no_link_stamp,
             )
             return EXIT_OK
 
@@ -240,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.service_password, document, source_used, args.service
             )
             register_secret(password)
+            client_identity = _load_client_identity(args, logger)
             run_probe(
                 server_hash_text=args.server,
                 service=args.service,
@@ -249,6 +334,9 @@ def main(argv: list[str] | None = None) -> int:
                 verbosity=args.verbose,
                 path_timeout=args.path_timeout,
                 connect_timeout=args.connect_timeout,
+                client_identity=client_identity,
+                link_stamp_cost=args.link_stamp_cost,
+                no_link_stamp=args.no_link_stamp,
             )
             return EXIT_OK
 

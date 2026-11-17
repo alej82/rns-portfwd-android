@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import RNS
@@ -18,11 +19,16 @@ class LinkManager:
         timeout: float = DEFAULT_CONNECT_TIMEOUT,
         link_factory=None,
         on_closed=None,
+        client_identity=None,
+        logger=None,
     ):
         self.destination = make_out_destination(identity)
         self.timeout = timeout
         self._link_factory = link_factory or RNS.Link
         self._on_closed_callback = on_closed
+        self.client_identity = client_identity
+        self.logger = logger or logging.getLogger(__name__)
+        self._identified = False
         self._established = threading.Event()
         self._closed = threading.Event()
         self.link = None
@@ -30,6 +36,7 @@ class LinkManager:
     def open(self):
         self._established.clear()
         self._closed.clear()
+        self._identified = False
         try:
             link = self._link_factory(
                 self.destination,
@@ -53,6 +60,15 @@ class LinkManager:
 
     def _on_established(self, link) -> None:
         self.link = link
+        if self.client_identity is not None and not self._identified:
+            self._identified = True
+            try:
+                link.identify(self.client_identity)
+            except Exception as exc:
+                self.logger.warning(
+                    "could not identify the Link (%s); continuing anonymously",
+                    type(exc).__name__,
+                )
         self._established.set()
 
     def _on_closed(self, link) -> None:

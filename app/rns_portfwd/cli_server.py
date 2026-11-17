@@ -3,34 +3,44 @@
 from __future__ import annotations
 
 import argparse
+import math
 import signal
 import sys
 
 from . import __version__
 from .config import (
+    apply_allow_identities,
     apply_server_secrets,
     default_server_name,
+    parse_allow_identity,
     parse_expose,
     parse_expose_public,
     parse_expose_udp,
     parse_expose_udp_public,
     read_secret_source,
+    validate_allow_identities,
+    validate_link_stamp_cost,
     validate_services,
 )
 from .constants import (
     DEFAULT_ANNOUNCE_INTERVAL,
     DEFAULT_AUTH_TIMEOUT,
     DEFAULT_BACKEND_TIMEOUT,
+    DEFAULT_HALF_OPEN_TIMEOUT,
+    DEFAULT_LINK_STAMP_COST,
     DEFAULT_MAX_CONNECTIONS_PER_PUBLIC,
     DEFAULT_MAX_CONNECTIONS_PER_SERVICE,
+    DEFAULT_MAX_HALF_OPEN,
     DEFAULT_MAX_LINKS,
     DEFAULT_MAX_STREAMS,
     DEFAULT_UDP_IDLE_TIMEOUT,
     DEFAULT_WINDOW,
     EXIT_OK,
+    IDENTITY_WAIT_TIMEOUT,
     MAX_CREDIT,
     STREAM_ID_MAX,
 )
+from .discovery import link_stamp_validation_supported
 from .errors import ConfigError, PortfwdError
 from .logging import register_secret, setup_logging
 from .server import PortfwdServer
@@ -41,6 +51,13 @@ examples:
   rns-portfwd-server --expose-udp 127.0.0.1:5353:dns:s3cret --announce
   rns-portfwd-server --expose '[::1]:5432:db:pa:ss' --no-compress
   rns-portfwd-server --expose-public 127.0.0.1:80:web --expose 127.0.0.1:22:ssh:s3cret
+  rns-portfwd-server --expose 127.0.0.1:22:ssh:s3cret \\
+      --allow-identity ssh:0123456789abcdef0123456789abcdef
+  rns-portfwd-server --expose-public 127.0.0.1:80:web \\
+      --allow-identity web:fedcba9876543210fedcba9876543210
+  rns-portfwd-server --expose 127.0.0.1:22:ssh:s3cret --link-stamp-cost 12.5
+  rns-portfwd-server --expose 127.0.0.1:22:ssh:s3cret --max-half-open 32 \\
+      --half-open-timeout 30
 """
 
 
@@ -91,6 +108,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="HOST:PORT:NAME",
         help="UDP service to expose without a password; may be repeated",
     )
+    parser.add_argument(
+        "--allow-identity",
+        action="append",
+        default=[],
+        metavar="SERVICE:HASH",
+        help=(
+            "restrict SERVICE to a Reticulum identity hash (32 hex characters); "
+            "may be repeated"
+        ),
+    )
     parser.add_argument("--announce", action="store_true", help="emit announces periodically")
     parser.add_argument(
         "--announce-interval",
@@ -117,6 +144,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--auth-timeout", type=float, default=DEFAULT_AUTH_TIMEOUT)
     parser.add_argument("--backend-timeout", type=float, default=DEFAULT_BACKEND_TIMEOUT)
+    parser.add_argument(
+        "--link-stamp-cost",
+        type=float,
+        default=DEFAULT_LINK_STAMP_COST,
+        metavar="COST",
+        help=(
+            "require a Reticulum link-request proof-of-work stamp of at least COST "
+            "(0 disables stamping, maximum 40; requires rns>=1.6)"
+        ),
+    )
+    parser.add_argument(
+        "--max-half-open",
+        type=int,
+        default=DEFAULT_MAX_HALF_OPEN,
+        metavar="N",
+        help="maximum links that have not completed the handshake (0 is unlimited)",
+    )
+    parser.add_argument(
+        "--half-open-timeout",
+        type=float,
+        default=DEFAULT_HALF_OPEN_TIMEOUT,
+        metavar="SECONDS",
+        help="establishment timeout for accepted links that are still half-open",
+    )
     parser.add_argument(
         "--udp-idle-timeout",
         type=float,
@@ -155,10 +206,25 @@ def _validate_options(args) -> None:
         raise ConfigError("--announce-interval must be positive")
     if args.auth_timeout <= 0:
         raise ConfigError("--auth-timeout must be positive")
+    if args.allow_identity and args.auth_timeout <= IDENTITY_WAIT_TIMEOUT:
+        raise ConfigError(
+            f"--auth-timeout must exceed {IDENTITY_WAIT_TIMEOUT:g}s when "
+            "--allow-identity is used"
+        )
     if args.backend_timeout <= 0:
         raise ConfigError("--backend-timeout must be positive")
     if args.udp_idle_timeout <= 0:
         raise ConfigError("--udp-idle-timeout must be positive")
+    args.link_stamp_cost = validate_link_stamp_cost(args.link_stamp_cost)
+    if args.max_half_open < 0:
+        raise ConfigError("--max-half-open must be 0 or greater")
+    if not math.isfinite(args.half_open_timeout) or args.half_open_timeout <= 0:
+        raise ConfigError("--half-open-timeout must be a positive finite number")
+    if args.link_stamp_cost > 0 and not link_stamp_validation_supported():
+        raise ConfigError(
+            "--link-stamp-cost requires native link-request stamping support; "
+            "install rns>=1.6 or leave the cost at 0"
+        )
     if not args.name or len(args.name) > 64:
         raise ConfigError("--name must be between 1 and 64 characters")
 
@@ -173,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
         services += [parse_expose_public(item) for item in args.expose_public]
         services += [parse_expose_udp_public(item) for item in args.expose_udp_public]
         validate_services(services)
+        allow_entries = [parse_allow_identity(item) for item in args.allow_identity]
+        validate_allow_identities(services, allow_entries)
         name = args.name or default_server_name()
         args.name = name
         _validate_options(args)
@@ -180,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         services, list_password = apply_server_secrets(
             services, args.list_password, document, source_used
         )
+        services = apply_allow_identities(services, allow_entries)
         for service in services:
             register_secret(service.password)
         register_secret(list_password)
@@ -203,6 +272,9 @@ def main(argv: list[str] | None = None) -> int:
             backend_timeout=args.backend_timeout,
             udp_idle_timeout=args.udp_idle_timeout,
             verbosity=args.verbose,
+            link_stamp_cost=args.link_stamp_cost,
+            max_half_open=args.max_half_open,
+            half_open_timeout=args.half_open_timeout,
         )
 
         def on_signal(signum, frame):
