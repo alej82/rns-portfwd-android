@@ -7,7 +7,7 @@ package.domain = io.areche
 source.dir = app
 source.include_exts = py,kv,png,jpg,atlas,json,ttf
 
-version = 0.2.0
+version = 0.3.0
 
 requirements = python3,kivy,pyjnius,android,cryptography,cffi,pyserial,setuptools,rns==1.6.0,libbz2,liblzma
 
