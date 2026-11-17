@@ -122,6 +122,12 @@ class Session:
         self._last_handoff = None
         self._link_used = False
         self._refreshing = False
+        # How many times the session has rebuilt an idle Link. A caller that was
+        # waiting for a usable Link compares it before and after to know whether
+        # the failure it saw was "the Link is being replaced" (a rebuild) rather
+        # than "there is no Link at all", which is what makes a UDP datagram
+        # safe to retry once.
+        self._rebuilds = 0
         self.effective_stamp_cost = None
         self.listeners = []
         self._accept_threads = []
@@ -562,118 +568,32 @@ class Session:
                 session.abort("idle timeout")
 
     def _open_udp_session(self, bound, sock, peer, key):
+        """Open the datagram stream of one peer and flush its buffered data.
+
+        The datagram that starts this thread is often the one that finds the
+        Link too old to use, so the session may be rebuilding it right now: the
+        first attempt then fails without sending anything, and the buffered
+        datagrams are retried once on the replacement Link.
+        """
         stats = getattr(bound, "stats", None)
         forward = bound.forward or {}
         try:
             if self._stop.is_set():
                 return
-            mux = self._wait_link()
-            if mux is None:
-                self.logger.debug(
-                    "dropping UDP stream for %s: link unavailable", bound.name
-                )
-                return
-            if not mux.wait_for_slot(self.connect_timeout, self._stop):
-                self.logger.debug(
-                    "dropping UDP stream for %s: stream limit reached", bound.name
-                )
-                return
-            stream_id = mux.allocate_id()
-            if stream_id is None:
-                self.logger.debug(
-                    "dropping UDP stream for %s: stream ids exhausted", bound.name
-                )
-                return
-            if not mux.reserve(stream_id):
-                return
-            if not forward:
-                mux.release_reservation(stream_id)
-                return
-
-            try:
-                session = DatagramSession(
-                    stream_id=stream_id,
-                    sock=sock,
-                    transport=mux.transport,
-                    window=self.window,
-                    logger=self.logger,
-                    on_closed=lambda closed, name=bound.name, stats=stats: self._stream_closed(
-                        stats, name, closed
-                    ),
-                    label=f"{bound.name}@{bound.actual_port}/{stream_id}",
-                    peer=peer,
-                    owns_socket=False,
-                    idle_timeout=self.udp_idle_timeout,
-                )
-            except Exception:
-                mux.release_reservation(stream_id)
-                raise
-            if not mux.install(stream_id, session):
-                mux.release_reservation(stream_id)
-                session.on_closed = None
-                session.abort("could not install stream", send_close=False)
-                return
-            with self._lock:
-                if session.closed:
-                    return
-                self._active[stream_id] = {
-                    "stream": session,
-                    "name": bound.name,
-                    "stats": stats,
-                }
-                if stats is not None:
-                    stats["streams"] += 1
-                    stats["connections"] += 1
-            try:
-                mux.transport.send_open(
-                    stream_id,
-                    PROTOCOL_VERSION,
-                    forward["name"],
-                    forward.get("password") or "",
-                )
-            except Exception as error:
-                mux.remove(stream_id)
-                # Keep `on_closed`: aborting after install must still purge
-                # `_active` and the stream counter through `_stream_closed`.
-                session.abort(f"could not send OPEN: {error}", send_close=False)
-                return
-            self._note_stream_sent()
-
-            if not self._wait_opened(session):
-                session.abort("open timeout")
-                return
-            if session.open_error is not None:
-                code = int(session.open_error)
-                if code == int(ErrorCode.VERSION):
-                    raise Terminal("version", "server rejected the protocol version")
-                error_code = _OPEN_ERROR_CODES.get(code, "backend")
-                if stats is not None:
-                    with self._lock:
-                        stats["last_error"] = error_code
-                self._publish(
-                    "stream_open_error",
-                    name=bound.name,
-                    port=bound.actual_port,
-                    error_code=error_code,
-                )
-                return
-            if session.closed:
-                return
-            session.send_initial_window()
-            session.start()
-            with self._lock:
-                pending = self._udp_pending.pop(key, [])
-                if session.closed:
-                    return
-                for datagram in pending:
-                    session.send_local(datagram)
-                self._udp_sessions[key] = session
-            self._publish(
-                "stream_open",
-                name=bound.name,
-                port=bound.actual_port,
-                stream_id=stream_id,
+            outcome, reason = self._start_udp_stream(
+                bound, sock, peer, key, forward, stats
             )
+            if outcome == "retry" and not self._stop.is_set():
+                # Nothing left the device, so trying again on the replacement
+                # Link cannot deliver the datagram twice.
+                self.logger.debug(
+                    "retrying the UDP stream for %s after %s", bound.name, reason
+                )
+                outcome, reason = self._start_udp_stream(
+                    bound, sock, peer, key, forward, stats
+                )
+            if outcome != "ok":
+                self._drop_pending_udp(bound, key, stats, reason)
         except Terminal as error:
             self._fail(error.code, str(error), fields=error.fields)
         except Exception as error:
@@ -682,6 +602,149 @@ class Session:
         finally:
             with self._lock:
                 self._udp_pending.pop(key, None)
+
+    def _start_udp_stream(self, bound, sock, peer, key, forward, stats):
+        """One attempt at opening the peer's stream.
+
+        Returns ``("ok", None)`` once the stream is installed and the buffered
+        datagrams were handed to it, ``("retry", reason)`` when the attempt
+        failed because the Link was rebuilt and nothing was sent, and
+        ``("dropped", reason)`` for every other failure.
+        """
+        rebuilds = self._rebuild_count()
+        mux = self._wait_link()
+        if mux is None:
+            if self._rebuild_count() != rebuilds:
+                return "retry", "link refresh"
+            return "dropped", "link unavailable"
+        if not mux.wait_for_slot(self.connect_timeout, self._stop):
+            return "dropped", "stream limit"
+        stream_id = mux.allocate_id()
+        if stream_id is None:
+            return "dropped", "stream ids exhausted"
+        if not mux.reserve(stream_id):
+            return "dropped", "reservation failed"
+        if not forward:
+            mux.release_reservation(stream_id)
+            return "dropped", "forward missing"
+
+        try:
+            session = DatagramSession(
+                stream_id=stream_id,
+                sock=sock,
+                transport=mux.transport,
+                window=self.window,
+                logger=self.logger,
+                on_closed=lambda closed, name=bound.name, stats=stats: self._stream_closed(
+                    stats, name, closed
+                ),
+                label=f"{bound.name}@{bound.actual_port}/{stream_id}",
+                peer=peer,
+                owns_socket=False,
+                idle_timeout=self.udp_idle_timeout,
+            )
+        except Exception:
+            mux.release_reservation(stream_id)
+            raise
+        if not mux.install(stream_id, session):
+            mux.release_reservation(stream_id)
+            session.on_closed = None
+            session.abort("could not install stream", send_close=False)
+            return "dropped", "stream install failed"
+        with self._lock:
+            if session.closed:
+                return "dropped", "link closed"
+            self._active[stream_id] = {
+                "stream": session,
+                "name": bound.name,
+                "stats": stats,
+            }
+            if stats is not None:
+                stats["streams"] += 1
+                stats["connections"] += 1
+        try:
+            mux.transport.send_open(
+                stream_id,
+                PROTOCOL_VERSION,
+                forward["name"],
+                forward.get("password") or "",
+            )
+        except Exception as error:
+            mux.remove(stream_id)
+            # Keep `on_closed`: aborting after install must still purge
+            # `_active` and the stream counter through `_stream_closed`.
+            session.abort(f"could not send OPEN: {error}", send_close=False)
+            return "dropped", "could not send OPEN"
+        self._note_stream_sent()
+
+        if not self._wait_opened(session):
+            session.abort("open timeout")
+            return "dropped", "open timeout"
+        if session.open_error is not None:
+            code = int(session.open_error)
+            if code == int(ErrorCode.VERSION):
+                raise Terminal("version", "server rejected the protocol version")
+            error_code = _OPEN_ERROR_CODES.get(code, "backend")
+            if stats is not None:
+                with self._lock:
+                    stats["last_error"] = error_code
+            self._publish(
+                "stream_open_error",
+                name=bound.name,
+                port=bound.actual_port,
+                error_code=error_code,
+            )
+            return "dropped", "open rejected"
+
+        session.send_initial_window()
+        session.start()
+        with self._lock:
+            pending = self._udp_pending.pop(key, [])
+            accepted = 0
+            for datagram in pending:
+                if session.closed:
+                    break
+                if session.send_local(datagram):
+                    accepted += 1
+                elif session.closed:
+                    break
+            live = not session.closed
+            if live:
+                self._udp_sessions[key] = session
+            else:
+                # Whatever the stream did not take goes back to the buffer so
+                # the retry can flush it on the replacement Link; the datagrams
+                # it did take are already queued and must not be duplicated.
+                rest = pending[accepted:]
+                if rest:
+                    self._udp_pending[key] = rest
+        if not live:
+            if accepted:
+                return "dropped", "link closed"
+            return "retry", "link closed"
+        self._publish(
+            "stream_open",
+            name=bound.name,
+            port=bound.actual_port,
+            stream_id=stream_id,
+        )
+        return "ok", None
+
+    def _drop_pending_udp(self, bound, key, stats, reason):
+        """Discard a peer's buffered datagrams, counted and reported."""
+        with self._lock:
+            pending = self._udp_pending.pop(key, [])
+            if stats is not None:
+                stats["last_error"] = reason
+                if pending:
+                    stats["dropped"] += len(pending)
+        if pending:
+            self._publish(
+                "datagrams_dropped",
+                name=bound.name,
+                count=len(pending),
+                reason=reason,
+            )
 
     def _accept_loop(self, bound, listener):
         while not self._stop.is_set():
@@ -740,6 +803,11 @@ class Session:
             time.sleep(0.05)
         return None
 
+    def _rebuild_count(self):
+        """Monotonic count of idle-Link rebuilds, read under the lock."""
+        with self._lock:
+            return self._rebuilds
+
     def _link_age_locked(self):
         """Age of the current Link, from its establishment or last use."""
         if self._link_since is None:
@@ -767,6 +835,7 @@ class Session:
                 return
             self._refreshing = True
             self.link_ready = False
+            self._rebuilds += 1
         # The activity log shows the translated `link_refresh` event instead.
         self.logger.debug("refreshing the link before its first stream")
         self._publish("link_refresh")
@@ -978,7 +1047,11 @@ class Session:
                 pass
         with self._lock:
             self._udp_sessions.clear()
-            self._udp_pending.clear()
+            # `_udp_pending` survives: those datagrams belong to an opener
+            # thread that is still waiting for a usable Link, and the refresh
+            # that arrives here is often the rebuild its own datagram caused.
+            # It is cleared in `_close_listeners()`, which runs on stop and on
+            # a terminal failure.
         rns_ops.close_link(link)
 
     def _close_listeners(self):

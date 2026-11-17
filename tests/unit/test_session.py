@@ -738,3 +738,163 @@ def test_wait_link_never_refreshes_a_used_link(monkeypatch):
 
     assert session._wait_link() is mux
     assert closes == []
+
+
+def _udp_peer(forward):
+    bound = udp_bound(forward["name"], forward, FakeDatagramSocket([]))
+    peer = ("127.0.0.1", 40000)
+    return bound, peer, (forward["name"], bound.sockets[0], peer)
+
+
+def _published(session, kind):
+    return [kwargs for args, kwargs in session.engine.events if len(args) > 1 and args[1] == kind]
+
+
+def test_udp_datagram_survives_the_link_rebuild_it_triggers(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    bound, peer, key = _udp_peer(forward)
+    session = make_session([forward], window=4096)
+    bound.stats = session._forward_stats[0]
+    session._udp_pending[key] = [b"first"]
+    mux = FakeMux()
+    calls = []
+
+    def fake_wait_link():
+        calls.append(1)
+        if len(calls) == 1:
+            # The datagram's own arrival triggered the idle-Link refresh.
+            with session._lock:
+                session._rebuilds += 1
+            return None
+        session.mux = mux
+        session.link_ready = True
+        return mux
+
+    monkeypatch.setattr(session, "_wait_link", fake_wait_link)
+    FakeDatagramSession.instances = []
+    monkeypatch.setattr(session_module, "DatagramSession", FakeDatagramSession)
+
+    session._open_udp_session(bound, bound.sockets[0], peer, key)
+
+    assert len(calls) == 2, "the datagram is retried once on the replacement Link"
+    stream = FakeDatagramSession.instances[0]
+    assert stream.sent == [b"first"]
+    assert session._udp_sessions[key] is stream
+    assert session._forward_stats[0]["dropped"] == 0
+    assert _published(session, "datagrams_dropped") == []
+
+
+def test_udp_datagram_is_dropped_and_reported_without_a_rebuild(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    bound, peer, key = _udp_peer(forward)
+    session = make_session([forward], window=4096)
+    bound.stats = session._forward_stats[0]
+    session._udp_pending[key] = [b"first", b"second"]
+    monkeypatch.setattr(session, "_wait_link", lambda: None)
+
+    session._open_udp_session(bound, bound.sockets[0], peer, key)
+
+    stats = session._forward_stats[0]
+    assert stats["dropped"] == 2
+    assert stats["last_error"] == "link unavailable"
+    assert session._udp_pending == {}
+    dropped = _published(session, "datagrams_dropped")
+    assert dropped[-1]["count"] == 2
+    assert dropped[-1]["name"] == "dns"
+    # The reason is a code, never the payload.
+    assert dropped[-1]["reason"] == "link unavailable"
+    assert "second" not in str(dropped[-1])
+
+
+def test_a_rejected_udp_open_is_not_retried(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    bound, peer, key = _udp_peer(forward)
+    session = make_session([forward], window=4096)
+    bound.stats = session._forward_stats[0]
+    session._udp_pending[key] = [b"first"]
+    mux = FakeMux()
+    session.mux = mux
+    session.link_ready = True
+    attempts = []
+
+    def fake_wait_link():
+        attempts.append(1)
+        return mux
+
+    class RejectedDatagramSession(FakeDatagramSession):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.open_error = 1
+
+    monkeypatch.setattr(session, "_wait_link", fake_wait_link)
+    FakeDatagramSession.instances = []
+    monkeypatch.setattr(session_module, "DatagramSession", RejectedDatagramSession)
+
+    session._open_udp_session(bound, bound.sockets[0], peer, key)
+
+    assert len(attempts) == 1
+    assert len(FakeDatagramSession.instances) == 1
+    assert _published(session, "stream_open_error")
+
+
+def test_stopping_the_session_skips_the_retry(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    bound, peer, key = _udp_peer(forward)
+    session = make_session([forward], window=4096)
+    bound.stats = session._forward_stats[0]
+    session._udp_pending[key] = [b"first"]
+    attempts = []
+
+    def fake_wait_link():
+        attempts.append(1)
+        session._stop.set()
+        with session._lock:
+            session._rebuilds += 1
+        return None
+
+    monkeypatch.setattr(session, "_wait_link", fake_wait_link)
+
+    session._open_udp_session(bound, bound.sockets[0], peer, key)
+
+    assert len(attempts) == 1, "a stopped session is never retried"
+
+
+def test_a_dropped_datagram_counts_once_per_datagram(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    bound, peer, key = _udp_peer(forward)
+    session = make_session([forward], window=4096)
+    bound.stats = session._forward_stats[0]
+    session._udp_pending[key] = [b"a", b"b", b"c"]
+
+    session._drop_pending_udp(bound, key, session._forward_stats[0], "link refresh")
+
+    assert session._forward_stats[0]["dropped"] == 3
+    assert session._forward_stats[0]["last_error"] == "link refresh"
+    assert session._udp_pending == {}
+    assert _published(session, "datagrams_dropped")[-1]["count"] == 3
+
+
+def test_pending_datagrams_survive_a_link_cleanup(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    bound, peer, key = _udp_peer(forward)
+    session = make_session([forward], window=4096)
+    bound.stats = session._forward_stats[0]
+    session._udp_pending[key] = [b"first"]
+    monkeypatch.setattr(session_module.rns_ops, "close_link", lambda link: None)
+
+    # The rebuild that the datagram itself triggered runs this cleanup before
+    # the replacement Link exists.
+    session._cleanup_link(send_close=False)
+
+    assert session._udp_pending[key] == [b"first"]
+
+
+def test_stopping_the_session_clears_pending_datagrams():
+    forward = dict(UDP_PUBLIC_FORWARD)
+    bound, peer, key = _udp_peer(forward)
+    session = make_session([forward], window=4096)
+    session._udp_pending[key] = [b"first"]
+
+    session._close_listeners()
+
+    assert session._udp_pending == {}

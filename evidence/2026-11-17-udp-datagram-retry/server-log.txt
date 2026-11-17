@@ -1,0 +1,4 @@
+[INFO] stream upub/1 opened
+[INFO] stream upub/1 closed: link lost (0 bytes in, 0 bytes out, 15.1s)
+[INFO] stream upub/1 opened
+[INFO] stream upub/1 closed: link lost (23 bytes in, 23 bytes out, 15.1s)

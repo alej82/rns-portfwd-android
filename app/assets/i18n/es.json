@@ -166,5 +166,8 @@
   "error.identity_error": "No se pudo abrir la identidad del dispositivo.",
   "connect.forwards.locked": "Detén la sesión activa antes de editar los reenvíos.",
   "session.state.stamping": "Generando stamp del enlace (coste {cost})…",
-  "log.link_refresh": "Renovando el enlace inactivo"
+  "log.link_refresh": "Renovando el enlace inactivo",
+  "log.datagrams_dropped": "Descartados {count} datagrama(s) de {name}: {reason}",
+  "log.drop.link": "sin enlace disponible",
+  "log.drop.timeout": "el stream no se abrió a tiempo"
 }

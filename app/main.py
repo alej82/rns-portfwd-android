@@ -1103,6 +1103,17 @@ class PortfwdApp(App):
             if line:
                 self.session_screen.append_log(line)
 
+    @staticmethod
+    def _drop_reason_text(reason):
+        """Translate the reason a UDP datagram was discarded."""
+        key = {
+            "link unavailable": "log.drop.link",
+            "link refresh": "log.drop.link",
+            "link closed": "log.drop.link",
+            "open timeout": "log.drop.timeout",
+        }.get(reason)
+        return t(key) if key else str(reason or "")
+
     def _event_line(self, event):
         kind = event.get("type")
         if kind == "stream_open":
@@ -1118,6 +1129,13 @@ class PortfwdApp(App):
             )
         if kind == "stream_rejected":
             return t("log.stream_rejected", name=event.get("name"), reason=event.get("reason"))
+        if kind == "datagrams_dropped":
+            return t(
+                "log.datagrams_dropped",
+                name=event.get("name"),
+                count=event.get("count", 0),
+                reason=self._drop_reason_text(event.get("reason")),
+            )
         if kind == "stream_open_error":
             return t(
                 "log.stream_open_error",

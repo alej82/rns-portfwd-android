@@ -1,0 +1,82 @@
+# Transcript — 2026-11-17 20:34-20:36, POCO F2 Pro (8ffbcdbf)
+
+Build: `bin/portfwd-0.3.0-arm64-v8a-debug.apk` (with `harden-udp-first-datagram`).
+Profile «UDP y público», forwards `echo` 2222 TCP, `uecho` 2223 UDP, `web`
+2224 TCP público, `upub` 2225 UDP público. `identify: true`,
+`stamp_mode: cost`, `stamp_cost: 8`.
+Server `5e5c054ec00d76dc6cb32d5d556d32ca`, `--link-stamp-cost 8`,
+`--auth-timeout` and `--udp-idle-timeout` at their defaults.
+
+## 1. Behaviour before the change (same build tree, previous APK)
+
+```
+$ adb shell 'printf primer-datagrama | toybox nc -u -w 10 127.0.0.1 2225'
+(no output)
+```
+
+Activity log:
+
+```
+Renovando el enlace inactivo
+Link perdido; reconectando
+Abierto upub en el puerto 2225
+Link perdido; reconectando
+stream upub@2225/1 closed: link closed (0 bytes in, 0 bytes out, 15.0s)
+```
+
+Server: `stream upub/1 opened` → `closed: link lost (0 bytes in, 0 bytes out)`.
+The stream existed but carried nothing: `_cleanup_link()` had already cleared
+the datagram buffer when the refresh's own reconnect ran.
+
+## 2. The datagram that triggers the rebuild (after the change)
+
+Session connected at 20:34:09, left idle, one datagram at 20:34:43:
+
+```
+$ adb shell 'printf datagrama-tras-refresco | toybox nc -u -w 15 127.0.0.1 2225'
+datagrama-tras-refresco
+```
+
+Activity log (`datagram-after-refresh.png`):
+
+```
+Renovando el enlace inactivo
+Link perdido; reconectando
+Abierto upub en el puerto 2225
+stream upub@2225/1 closed: link closed (23 bytes in, 23 bytes out, 15.0s)
+Cerrado upub: link closed (23 entrada, 23 salida, 15.051s)
+```
+
+Server (`server-log.txt`): `stream upub/1 opened` → `closed: link lost (23 bytes
+in, 23 bytes out, 15.1s)`. Session counters after the run: `upub` 23/23.
+
+## 3. A datagram that cannot be delivered (after the change)
+
+Test server stopped, then one datagram:
+
+```
+$ pkill -f "cli_serve[r]"   # stops the test rns-portfwd-server
+$ adb shell 'printf datagrama-sin-servidor | toybox nc -u -w 12 127.0.0.1 2225'
+(no output)
+```
+
+Activity log (`drop-reported.png`), ~30 s later:
+
+```
+Link perdido; reconectando
+Reintento 1 en 2s (link_failed)
+Reintento 2 en 3s (no_path)
+Descartados 1 datagrama(s) de upub: sin enlace disponible
+Reintento 3 en 4s (no_path)
+```
+
+The datagram is gone, but it is counted and explained. Before the change the
+same case left the forward at `0/0` with no line at all.
+
+## Note
+
+After the rebuild the session still logs a second `Link perdido; reconectando`
+right after `Abierto upub`, and the datagram is delivered anyway. That extra
+reconnect is the pre-existing Link churn of an idle session (server
+authentication timeout plus the client refresh), not something this change
+introduces; it is recorded here because it shows up in the same log.

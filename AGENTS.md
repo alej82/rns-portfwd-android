@@ -35,9 +35,15 @@ in `app/rns_portfwd/` (commit `ee2068a`). The app targets API 33, min API 24,
 - **UDP is one stream per local source.** `Session` keys datagram sessions on
   `(forward, listener socket, peer)` so replies leave from the socket the peer
   reached. The first datagram of a new peer is buffered (max 32, at most
-  `max_streams` pending keys) while the stream opens. Oversized datagrams are
-  dropped, never fragmented or compressed; a full queue drops instead of
-  blocking. Idle streams close after 60 s and reopen on the next datagram.
+  `max_streams` pending keys) while the stream opens. A first datagram that
+  arrives while the session is rebuilding an idle Link is retried once on the
+  replacement Link; the session compares `_rebuilds` before and after an
+  attempt to tell "the Link is being replaced" from "there is no Link at all".
+  A datagram that is finally discarded is counted in `stats["dropped"]` and
+  published as `datagrams_dropped` with a reason, never dropped silently.
+  Oversized datagrams are dropped, never fragmented or compressed; a full queue
+  drops instead of blocking. Idle streams close after 60 s and reopen on the
+  next datagram.
 - **`password is None` means a public service.** Public forwards send an empty
   credential, are never registered as secrets, and the probe must not require a
   password. `/probe` decides the service protocol: a mismatch is a terminal
@@ -148,7 +154,7 @@ openspec validate add-client-identity-and-stamping --strict
 openspec validate --all --strict
 ```
 
-Current verification: 222 tests pass (195 unit, 27 integration), ruff clean,
+Current verification: 229 tests pass (202 unit, 27 integration), ruff clean,
 OpenSpec strict valid. The three changes are archived and `openspec/specs/`
 holds the capability specs: `client-identity`, `link-stamping`,
 `link-liveness`, `udp-forwarding` and `public-forwards`. Device passes cover

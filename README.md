@@ -211,6 +211,10 @@ Evidence, logs and the checklist are in [`evidence/README.md`](evidence/README.m
 - A UDP stream with no traffic for 60 s is closed; the next datagram from the
   same local source opens a fresh stream, so applications see a pause, not an
   error.
+- A UDP datagram that arrives while the session is rebuilding an idle Link is
+  retried once on the replacement Link, so the first datagram after a pause is
+  normally delivered. When it cannot be delivered the forward's dropped counter
+  grows and the activity log says how many datagrams were discarded and why.
 - Local ports below 1024 are rejected. On the reference device an app-uid
   `bind()` to port 80 fails with `EACCES`, so the conservative validation is
   correct.

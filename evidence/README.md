@@ -10,6 +10,7 @@ failed installs and negative results are recorded too, not just the successes.
 | 2026-11-17 | `harden-stamp-cost-and-idle-link` | [`2026-11-17-stamp-cap-and-link-refresh/`](2026-11-17-stamp-cap-and-link-refresh/README.md) |
 | 2026-11-17 | Launcher icon and loading screen | [`2026-11-17-icon-and-splash/`](2026-11-17-icon-and-splash/README.md) |
 | 2026-11-17 | `add-udp-and-public-forwards` (device pass) | [`2026-11-17-udp-and-public/`](2026-11-17-udp-and-public/README.md) |
+| 2026-11-17 | `harden-udp-first-datagram` | [`2026-11-17-udp-datagram-retry/`](2026-11-17-udp-datagram-retry/README.md) |
 
 ## Conventions
 

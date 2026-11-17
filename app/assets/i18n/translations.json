@@ -847,6 +847,21 @@
       "en": "Generating link stamp (cost {cost})…",
       "context": "Session state while a link-request stamp is computed",
       "file": "app/main.py"
+    },
+    "log.datagrams_dropped": {
+      "en": "Dropped {count} datagram(s) for {name}: {reason}",
+      "context": "Activity log when buffered UDP datagrams are discarded",
+      "file": "app/main.py"
+    },
+    "log.drop.link": {
+      "en": "no usable link",
+      "context": "Why a UDP datagram was dropped",
+      "file": "app/main.py"
+    },
+    "log.drop.timeout": {
+      "en": "the stream did not open in time",
+      "context": "Why a UDP datagram was dropped",
+      "file": "app/main.py"
     }
   }
 }
