@@ -2,12 +2,20 @@ import threading
 import time
 
 import RNS
-from rns_portfwd.discovery import make_out_destination
+from rns_portfwd.discovery import configure_link_stamping, make_out_destination
 from rns_portfwd.errors import ResolutionError
 
 
 class Cancelled(RuntimeError):
     pass
+
+
+class StampUnsupported(RuntimeError):
+    """The local Reticulum cannot generate the stamps the server requires."""
+
+
+_IDENTITY_RETRY_DELAY = 1.0
+_MAX_PROBE_ATTEMPTS = 3
 
 
 def _check(stop_event):
@@ -38,14 +46,55 @@ def resolve_identity(destination_hash, timeout, stop_event=None):
     )
 
 
-def open_link(identity, timeout, stop_event=None, on_closed=None):
+def configure_stamping(server_hash, stamp_mode="auto", stamp_cost=None, logger=None):
+    """Apply the profile's link-stamp policy before any Link is created.
+
+    Returns the cost the next Link will ask for (0 when no stamp is used).
+    ``stamp_mode`` must already be validated; an unknown mode is a programming
+    error, not a silent fallback.
+    """
+    mode = str(stamp_mode or "auto").strip().lower()
+    if mode not in ("auto", "off", "cost"):
+        raise ValueError(f"invalid link stamp mode {stamp_mode!r}")
+    try:
+        if mode == "off":
+            return configure_link_stamping(server_hash, None, True, logger)
+        if mode == "cost":
+            if stamp_cost is None:
+                raise ValueError("a custom link stamp cost is required")
+            return configure_link_stamping(server_hash, float(stamp_cost), False, logger)
+        return configure_link_stamping(server_hash, None, False, logger)
+    except ResolutionError as error:
+        raise StampUnsupported(str(error)) from None
+
+
+def open_link(
+    identity,
+    timeout,
+    stop_event=None,
+    on_closed=None,
+    *,
+    server_hash=None,
+    client_identity=None,
+    stamp_mode="auto",
+    stamp_cost=None,
+    logger=None,
+):
+    if server_hash is not None:
+        configure_stamping(server_hash, stamp_mode, stamp_cost, logger)
     destination = make_out_destination(identity)
     established = threading.Event()
     closed = threading.Event()
-    holder = {}
 
     def _established(link):
-        holder["link"] = link
+        if client_identity is not None:
+            try:
+                link.identify(client_identity)
+            except Exception:
+                # An unidentifiable Link still works anonymously; the server
+                # decides whether to reject it and the probe reports auth.
+                if logger is not None:
+                    logger.debug("could not identify the Link; continuing anonymously")
         established.set()
 
     def _closed(link):
@@ -86,7 +135,6 @@ def open_link(identity, timeout, stop_event=None, on_closed=None):
         except Exception:
             pass
         raise
-    holder["link"] = link
     return link
 
 
@@ -124,6 +172,31 @@ def link_request(link, path, data, timeout, stop_event=None):
     if result.get("failed"):
         raise ResolutionError(f"request {path} failed")
     return result.get("response")
+
+
+def probe_request(link, service, password, timeout, stop_event=None, *, client_identity=None):
+    """Probe a service, tolerating an identification proof that raced the request."""
+    payload = {"service": service, "password": password}
+    response = link_request(link, "/probe", payload, timeout, stop_event)
+    if client_identity is None:
+        return response
+    attempts = 1
+    while attempts < _MAX_PROBE_ATTEMPTS:
+        if not isinstance(response, dict) or response.get("error") != "auth":
+            return response
+        try:
+            link.identify(client_identity)
+        except Exception:
+            pass
+        if stop_event is not None:
+            if stop_event.wait(_IDENTITY_RETRY_DELAY):
+                raise Cancelled("operation cancelled")
+            _check(stop_event)
+        else:
+            time.sleep(_IDENTITY_RETRY_DELAY)
+        response = link_request(link, "/probe", payload, timeout, stop_event)
+        attempts += 1
+    return response
 
 
 def close_link(link):

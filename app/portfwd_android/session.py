@@ -74,6 +74,9 @@ class Session:
         compress=True,
         udp_idle_timeout=DEFAULT_UDP_IDLE_TIMEOUT,
         logger=None,
+        client_identity=None,
+        stamp_mode="auto",
+        stamp_cost=None,
     ):
         self.engine = engine
         self.server_hash = server_hash
@@ -90,6 +93,9 @@ class Session:
         self.compress = compress
         self.udp_idle_timeout = float(udp_idle_timeout)
         self.logger = logger if logger is not None else get_logger()
+        self.client_identity = client_identity
+        self.stamp_mode = stamp_mode
+        self.stamp_cost = stamp_cost
 
         self.state = "idle"
         self.wanted = False
@@ -226,7 +232,14 @@ class Session:
                 self.connect_timeout,
                 self._stop,
                 on_closed=self._on_link_closed,
+                server_hash=self.server_hash_bytes,
+                client_identity=self.client_identity,
+                stamp_mode=self.stamp_mode,
+                stamp_cost=self.stamp_cost,
+                logger=self.logger,
             )
+        except rns_ops.StampUnsupported as error:
+            raise Terminal("stamp_unsupported", str(error)) from None
         except ResolutionError as error:
             raise Retryable("link_failed", str(error), "link") from None
         with self._lock:
@@ -297,12 +310,13 @@ class Session:
         for forward in self.forward_specs:
             name = forward["name"]
             if name not in checked:
-                response = rns_ops.link_request(
+                response = rns_ops.probe_request(
                     link,
-                    "/probe",
-                    {"service": name, "password": forward.get("password") or ""},
+                    name,
+                    forward.get("password") or "",
                     self.connect_timeout,
                     self._stop,
+                    client_identity=self.client_identity,
                 )
                 if not isinstance(response, dict) or not response.get("ok"):
                     raise AuthError(f"authentication failed for service {name!r}")

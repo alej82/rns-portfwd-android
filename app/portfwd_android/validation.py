@@ -1,4 +1,7 @@
+import math
 import re
+
+from rns_portfwd.constants import MAX_LINK_STAMP_COST
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _HEX = set("0123456789abcdef")
@@ -7,6 +10,7 @@ _MAX_SECRET = 4096
 _MIN_PORT = 1024
 _MAX_PORT = 65535
 PROTOCOLS = ("tcp", "udp")
+STAMP_MODES = ("auto", "off", "cost")
 
 
 class ValidationError(ValueError):
@@ -68,6 +72,45 @@ def validate_optional_password(value, field="password"):
     if isinstance(value, str) and not value.strip():
         return None
     return validate_password(value, field=field)
+
+
+def validate_stamp_mode(value):
+    mode = "auto" if value is None else str(value).strip().lower()
+    if mode not in STAMP_MODES:
+        raise ValidationError(
+            "invalid link stamp mode: use 'auto', 'off' or 'cost'",
+            code="config",
+            field="stamp_mode",
+        )
+    return mode
+
+
+def validate_stamp_config(mode, cost):
+    """Return ``(mode, None)`` for auto/off, or ``(mode, float 0..40)`` for cost."""
+    resolved = validate_stamp_mode(mode)
+    if resolved != "cost":
+        return resolved, None
+    if cost is None or isinstance(cost, bool):
+        raise ValidationError(
+            "a custom link stamp cost is required",
+            code="config",
+            field="stamp_cost",
+        )
+    try:
+        value = float(cost)
+    except (TypeError, ValueError):
+        raise ValidationError(
+            "link stamp cost must be numeric",
+            code="config",
+            field="stamp_cost",
+        ) from None
+    if not math.isfinite(value) or not 0.0 <= value <= MAX_LINK_STAMP_COST:
+        raise ValidationError(
+            f"link stamp cost must be between 0 and {MAX_LINK_STAMP_COST:g}",
+            code="config",
+            field="stamp_cost",
+        )
+    return resolved, value
 
 
 def validate_port(value, allow_zero=True):

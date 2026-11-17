@@ -11,7 +11,9 @@ def reset():
 
 
 def test_known_codes_are_translated():
-    assert error_text("auth").startswith("Se rechazó la credencial del servicio")
+    auth = error_text("auth")
+    assert auth.startswith("El servidor rechazó la credencial")
+    assert "Identificar este dispositivo" in auth
     assert error_text("shared_instance").startswith("Inicia Columba")
     assert error_text("list_disabled").startswith("El listado está deshabilitado")
 
@@ -80,6 +82,33 @@ def test_protocol_field_error_renders():
 
 def test_port_in_use_uses_parameter():
     assert "2222" in error_text("port_in_use", port=2222)
+
+
+def test_stamp_and_identity_errors_are_translated():
+    assert error_text("stamp_unsupported").startswith("Este servidor exige stamps de enlace")
+    assert error_text("identity_error") == "No se pudo abrir la identidad del dispositivo."
+
+
+def test_stamp_config_fields_have_their_own_messages():
+    assert error_text("config", field="stamp_mode") == "Modo de stamping no válido."
+    assert error_text("config", field="stamp_cost") == (
+        "El coste de stamping debe ser un número entre 0 y 40."
+    )
+
+
+def test_stamp_config_fields_use_their_own_keys(monkeypatch):
+    calls = []
+
+    def fake_t(key, lang=None, **params):
+        calls.append((key, params))
+        return "ok"
+
+    monkeypatch.setattr(messages, "t", fake_t)
+    error_text("config", field="stamp_mode")
+    error_text("config", field="stamp_cost")
+
+    assert calls == [("error.stamp_mode", {}), ("error.stamp_cost", {})]
+
 
 
 def test_unknown_code_keeps_diagnostic_code():

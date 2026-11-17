@@ -120,3 +120,114 @@ def test_empty_password_in_legacy_file_is_loaded_as_public(tmp_path):
     )
     entry = ProfileStore(str(path)).get("abc")
     assert entry["forwards"][0]["password"] is None
+
+
+def test_legacy_profile_defaults_to_anonymous_and_automatic(tmp_path):
+    path = tmp_path / "profiles.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "abc",
+                    "hash": "a" * 32,
+                    "label": "old",
+                    "forwards": [{"name": "ssh", "local_port": 2222}],
+                }
+            ]
+        )
+    )
+    entry = ProfileStore(str(path)).get("abc")
+    assert entry["identify"] is False
+    assert entry["stamp_mode"] == "auto"
+    assert entry["stamp_cost"] is None
+
+
+def test_identity_and_stamp_policy_round_trip(tmp_path):
+    path = tmp_path / "profiles.json"
+    store = ProfileStore(str(path))
+    entry = store.upsert(
+        "a" * 32,
+        "mail",
+        _forwards(),
+        identify=True,
+        stamp_mode="cost",
+        stamp_cost=12.5,
+    )
+
+    reloaded = ProfileStore(str(path)).get(entry["id"])
+    assert reloaded["identify"] is True
+    assert reloaded["stamp_mode"] == "cost"
+    assert reloaded["stamp_cost"] == 12.5
+    raw = json.loads(path.read_text())[0]
+    assert raw["identify"] is True
+    assert raw["stamp_mode"] == "cost"
+    assert raw["stamp_cost"] == 12.5
+
+    auto = store.upsert("b" * 32, "auto", _forwards(), identify=False)
+    assert auto["identify"] is False
+    assert auto["stamp_mode"] == "auto"
+    assert auto["stamp_cost"] is None
+
+
+def test_upsert_keeps_positional_compatibility(tmp_path):
+    store = ProfileStore(str(tmp_path / "profiles.json"))
+    entry = store.upsert("a" * 32, "One", _forwards(), "list", 42.0)
+    assert entry["list_password"] == "list"
+    assert entry["last_used"] == 42.0
+    assert entry["identify"] is False
+    assert entry["stamp_mode"] == "auto"
+    assert entry["stamp_cost"] is None
+
+    identified = store.upsert("b" * 32, "Two", _forwards(), None, None, True, "cost", 7)
+    assert identified["identify"] is True
+    assert identified["stamp_mode"] == "cost"
+    assert identified["stamp_cost"] == 7.0
+
+
+def test_upsert_normalises_an_invalid_stamp_mode(tmp_path):
+    store = ProfileStore(str(tmp_path / "profiles.json"))
+
+    entry = store.upsert("a" * 32, "One", _forwards(), stamp_mode="turbo", stamp_cost=5)
+    assert entry["stamp_mode"] == "auto"
+    assert entry["stamp_cost"] is None
+
+    over_range = store.upsert("b" * 32, "Two", _forwards(), stamp_mode="cost", stamp_cost=55)
+    assert over_range["stamp_mode"] == "auto"
+    assert over_range["stamp_cost"] is None
+
+
+def test_stored_invalid_stamp_config_is_normalised_to_auto(tmp_path):
+    path = tmp_path / "profiles.json"
+    path.write_text(
+        json.dumps(
+            [
+                {"id": "a", "hash": "a" * 32, "stamp_mode": "turbo", "stamp_cost": 3},
+                {"id": "b", "hash": "b" * 32, "stamp_mode": "cost"},
+                {"id": "c", "hash": "c" * 32, "stamp_mode": "cost", "stamp_cost": 3},
+            ]
+        )
+    )
+    store = ProfileStore(str(path))
+
+    first, second, third = (store.get(profile_id) for profile_id in ("a", "b", "c"))
+    assert (first["stamp_mode"], first["stamp_cost"]) == ("auto", None)
+    assert (second["stamp_mode"], second["stamp_cost"]) == ("auto", None)
+    assert (third["stamp_mode"], third["stamp_cost"]) == ("cost", 3.0)
+
+
+def test_identify_requires_a_literal_true(tmp_path):
+    path = tmp_path / "profiles.json"
+    path.write_text(
+        json.dumps(
+            [
+                {"id": "a", "hash": "a" * 32, "identify": "yes"},
+                {"id": "b", "hash": "b" * 32, "identify": 1},
+                {"id": "c", "hash": "c" * 32, "identify": True},
+            ]
+        )
+    )
+    store = ProfileStore(str(path))
+    assert store.get("a")["identify"] is False
+    assert store.get("b")["identify"] is False
+    assert store.get("c")["identify"] is True
+

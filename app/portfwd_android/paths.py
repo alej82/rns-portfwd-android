@@ -48,5 +48,9 @@ def settings_path():
     return os.path.join(config_dir(), "settings.json")
 
 
+def identity_path():
+    return os.path.join(config_dir(), "identity.id")
+
+
 def log_dir():
     return os.path.join(app_home(), "logs")

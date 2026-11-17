@@ -9,6 +9,8 @@ def error_text(code, field=None, message=None, **params):
         "protocol",
         "password",
         "duplicates",
+        "stamp_mode",
+        "stamp_cost",
     ):
         return t(f"error.{field}")
     mapping = {
@@ -19,6 +21,8 @@ def error_text(code, field=None, message=None, **params):
         "link_failed": "error.link_failed",
         "auth": "error.auth",
         "protocol_mismatch": "error.protocol_mismatch",
+        "stamp_unsupported": "error.stamp_unsupported",
+        "identity_error": "error.identity_error",
         "version": "error.version",
         "port_in_use": "error.port_in_use",
         "low_port": "error.low_port",

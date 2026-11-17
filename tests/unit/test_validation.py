@@ -8,6 +8,8 @@ from portfwd_android.validation import (
     validate_hash,
     validate_password,
     validate_port,
+    validate_stamp_config,
+    validate_stamp_mode,
 )
 
 
@@ -144,3 +146,72 @@ def test_duplicate_forward_names_are_reported():
     assert duplicate_forward_names(forwards) == ["ssh"]
     assert duplicate_forward_names([{"name": "ssh"}, {"name": "vnc"}]) == []
     assert duplicate_forward_names([{"name": ""}, {"name": ""}]) == []
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("auto", "auto"),
+        ("AUTO", "auto"),
+        ("  off  ", "off"),
+        ("Cost", "cost"),
+        (None, "auto"),
+    ],
+)
+def test_stamp_mode_is_normalised(value, expected):
+    assert validate_stamp_mode(value) == expected
+
+
+@pytest.mark.parametrize("value", ["", "fast", "custom", "0", "a u t o"])
+def test_invalid_stamp_mode_is_a_config_error(value):
+    with pytest.raises(ValidationError) as error:
+        validate_stamp_mode(value)
+    assert error.value.code == "config"
+    assert error.value.field == "stamp_mode"
+
+
+@pytest.mark.parametrize("mode", ["auto", "off", "AUTO", " OFF "])
+def test_non_cost_modes_ignore_the_cost(mode):
+    assert validate_stamp_config(mode, 12) == (validate_stamp_mode(mode), None)
+    assert validate_stamp_config(mode, None) == (validate_stamp_mode(mode), None)
+
+
+@pytest.mark.parametrize(
+    "cost, expected",
+    [
+        (12, 12.0),
+        (12.5, 12.5),
+        ("12.5", 12.5),
+        (0, 0.0),
+        ("0", 0.0),
+        (40, 40.0),
+        (40.0, 40.0),
+    ],
+)
+def test_custom_stamp_cost_accepts_the_valid_range(cost, expected):
+    assert validate_stamp_config("cost", cost) == ("cost", expected)
+
+
+@pytest.mark.parametrize(
+    "cost",
+    [None, True, False, "nope", float("nan"), float("inf"), float("-inf"), -1, 40.1, 100],
+)
+def test_custom_stamp_cost_rejects_invalid_values(cost):
+    with pytest.raises(ValidationError) as error:
+        validate_stamp_config("cost", cost)
+    assert error.value.code == "config"
+    assert error.value.field == "stamp_cost"
+
+
+def test_stamp_config_rejects_an_unknown_mode():
+    with pytest.raises(ValidationError) as error:
+        validate_stamp_config("sometimes", 5)
+    assert error.value.field == "stamp_mode"
+
+
+def test_stamp_config_requires_a_cost_only_for_cost_mode():
+    with pytest.raises(ValidationError) as error:
+        validate_stamp_config("cost", None)
+    assert error.value.field == "stamp_cost"
+    assert validate_stamp_config("auto", None) == ("auto", None)
+

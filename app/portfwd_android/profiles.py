@@ -5,6 +5,7 @@ import time
 import uuid
 
 from .paths import profiles_path
+from .validation import ValidationError, validate_stamp_config
 
 
 def _write_private(path, data):
@@ -19,6 +20,14 @@ def _write_private(path, data):
         os.fsync(handle.fileno())
     os.replace(temporary, path)
     os.chmod(path, 0o600)
+
+
+def _normalise_stamp(mode, cost):
+    """Return a valid ``(stamp_mode, stamp_cost)`` pair, defaulting to auto."""
+    try:
+        return validate_stamp_config(mode, cost)
+    except ValidationError:
+        return "auto", None
 
 
 class ProfileStore:
@@ -71,6 +80,9 @@ class ProfileStore:
             last_used = float(entry.get("last_used") or 0)
         except (TypeError, ValueError):
             last_used = 0.0
+        stamp_mode, stamp_cost = _normalise_stamp(
+            entry.get("stamp_mode"), entry.get("stamp_cost")
+        )
         return {
             "id": str(entry.get("id") or uuid.uuid4().hex),
             "label": str(entry.get("label") or entry["hash"][:8]),
@@ -78,6 +90,9 @@ class ProfileStore:
             "forwards": forwards,
             "list_password": entry.get("list_password") or None,
             "last_used": last_used,
+            "identify": entry.get("identify") is True,
+            "stamp_mode": stamp_mode,
+            "stamp_cost": stamp_cost,
         }
 
     def save(self):
@@ -108,10 +123,21 @@ class ProfileStore:
                     return dict(entry)
         return None
 
-    def upsert(self, server_hash, label, forwards, list_password=None, last_used=None):
+    def upsert(
+        self,
+        server_hash,
+        label,
+        forwards,
+        list_password=None,
+        last_used=None,
+        identify=False,
+        stamp_mode="auto",
+        stamp_cost=None,
+    ):
         profile_hash = str(server_hash or "").strip().lower()
         if len(profile_hash) != 32:
             raise ValueError("profile hash must have 32 characters")
+        resolved_mode, resolved_cost = _normalise_stamp(stamp_mode, stamp_cost)
         with self._lock:
             entry = None
             for candidate in self._profiles:
@@ -126,6 +152,9 @@ class ProfileStore:
                     "forwards": [],
                     "list_password": None,
                     "last_used": 0.0,
+                    "identify": False,
+                    "stamp_mode": "auto",
+                    "stamp_cost": None,
                 }
                 self._profiles.append(entry)
             entry["label"] = str(label or "").strip() or profile_hash[:8]
@@ -142,6 +171,9 @@ class ProfileStore:
             ]
             entry["list_password"] = list_password or None
             entry["last_used"] = float(last_used if last_used is not None else time.time())
+            entry["identify"] = bool(identify)
+            entry["stamp_mode"] = resolved_mode
+            entry["stamp_cost"] = resolved_cost
             self.save()
             return dict(entry)
 

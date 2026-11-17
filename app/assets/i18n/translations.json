@@ -153,6 +153,76 @@
       "context": "Enumeration password placeholder",
       "file": "app/main.py"
     },
+    "connect.identity.label": {
+      "en": "Identify this device",
+      "context": "Switch that sends the device identity to the server",
+      "file": "app/main.py"
+    },
+    "connect.identity.hint": {
+      "en": "Send this device's Reticulum identity so a server allow-list can recognise it. Off means anonymous.",
+      "context": "Explanation under the identify switch",
+      "file": "app/main.py"
+    },
+    "connect.identity.show": {
+      "en": "View identity",
+      "context": "Button that opens the device identity panel",
+      "file": "app/main.py"
+    },
+    "connect.identity.title": {
+      "en": "Device identity",
+      "context": "Device identity panel title",
+      "file": "app/main.py"
+    },
+    "connect.identity.hash_label": {
+      "en": "Hash for the server allow-list",
+      "context": "Device identity panel hash heading",
+      "file": "app/main.py"
+    },
+    "connect.identity.copy": {
+      "en": "Copy",
+      "context": "Button that copies the identity hash",
+      "file": "app/main.py"
+    },
+    "connect.identity.copied": {
+      "en": "Hash copied",
+      "context": "Confirmation after copying the identity hash",
+      "file": "app/main.py"
+    },
+    "connect.identity.note": {
+      "en": "The private key never leaves the app. Share only this hash.",
+      "context": "Device identity panel privacy note",
+      "file": "app/main.py"
+    },
+    "connect.stamp.label": {
+      "en": "Link stamping",
+      "context": "Advanced link stamping selector label",
+      "file": "app/main.py"
+    },
+    "connect.stamp.mode.auto": {
+      "en": "Automatic",
+      "context": "Stamp mode that follows the cost the server advertises",
+      "file": "app/main.py"
+    },
+    "connect.stamp.mode.off": {
+      "en": "Disabled",
+      "context": "Stamp mode that never stamps a link request",
+      "file": "app/main.py"
+    },
+    "connect.stamp.mode.cost": {
+      "en": "Custom cost",
+      "context": "Stamp mode that uses a fixed cost",
+      "file": "app/main.py"
+    },
+    "connect.stamp.cost": {
+      "en": "Cost (0-40)",
+      "context": "Custom link stamp cost field",
+      "file": "app/main.py"
+    },
+    "connect.stamp.hint": {
+      "en": "Automatic follows the cost the server advertises.",
+      "context": "Explanation under the stamp mode selector",
+      "file": "app/main.py"
+    },
     "connect.actions.connect": {
       "en": "Connect",
       "context": "Start a forwarding session",
@@ -654,7 +724,7 @@
       "file": "app/main.py"
     },
     "error.auth": {
-      "en": "The service credential was rejected. Use a password unless the service is public.",
+      "en": "The service credential was rejected. Check the password; if the service is allow-listed, enable «Identify this device» on the profile.",
       "context": "Auth error",
       "file": "app/main.py"
     },
@@ -741,6 +811,26 @@
     "error.duplicates": {
       "en": "Two forwards use the same local port.",
       "context": "Duplicate port validation",
+      "file": "app/main.py"
+    },
+    "error.stamp_mode": {
+      "en": "Invalid stamp mode.",
+      "context": "Link stamp mode validation",
+      "file": "app/main.py"
+    },
+    "error.stamp_cost": {
+      "en": "The stamp cost must be a number between 0 and 40.",
+      "context": "Link stamp cost validation",
+      "file": "app/main.py"
+    },
+    "error.stamp_unsupported": {
+      "en": "This server requires link stamps, but the bundled Reticulum cannot generate them. Update the app.",
+      "context": "Local Reticulum without link stamp support",
+      "file": "app/main.py"
+    },
+    "error.identity_error": {
+      "en": "Could not open the device identity.",
+      "context": "The device identity could not be read",
       "file": "app/main.py"
     },
     "connect.forwards.locked": {

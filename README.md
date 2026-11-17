@@ -6,7 +6,7 @@ using the shared Reticulum instance already provided by Columba, MeshChat or
 another Android app.
 
 The app is a Kivy/python-for-android shell around an unmodified vendor copy of
-`rns_portfwd` (commit `a76e162`). The forwarding engine is headless and the UI
+`rns_portfwd` (commit `ee2068a`). The forwarding engine is headless and the UI
 never touches RNS or sockets directly.
 
 Current version: `0.2.0` · License: GPL-3.0-or-later · Target: Android 7.0+,
@@ -24,6 +24,11 @@ Current version: `0.2.0` · License: GPL-3.0-or-later · Target: Android 7.0+,
 - Ephemeral local port `0`.
 - Saved profiles with label, hash, forwards, optional list password and
   last-used ordering.
+- Opt-in device identity per profile for servers that allow-list identity
+  hashes; the app shows the 32-hex hash so it can be copied to the server, and
+  stays anonymous when the switch is off.
+- Automatic link-request stamping from the cost the server advertises, with a
+  per-profile override (automatic, disabled or a custom cost).
 - Foreground service, persistent notification, wake lock and a localized
   «Stop»/«Detener» action; the session survives screen-off and backgrounding.
 - Automatic path re-resolution and Link recovery after the shared-instance
@@ -40,7 +45,8 @@ app/portfwd_android/
   engine.py                  facade: transport, snapshot, events, list/probe
   session.py                 one forwarding session, TCP streams, UDP datagram
                              sessions and the reconnect supervisor
-  rns_ops.py                 resolve / open Link / request helpers
+  rns_ops.py                 resolve / open Link / identify / request helpers
+  identity.py                device identity file (0600) and public hash
   listeners.py               dual IPv4/IPv6 loopback listeners (TCP and UDP)
   reticulum.py               TCP preflight + start-once singleton handling
   rns_config.py              managed shared-instance config (0600)
@@ -70,9 +76,14 @@ the engine re-resolves the path and reopens the Link with 1–60 s backoff.
   `127.0.0.1:37428` (Columba is tested).
 - A server running `rns-portfwd-server` reachable over the mesh.
 
-The client is anonymous: it resolves the server's public identity by hash and
-never stores a client identity. Server-side enumeration is private and needs
-the server's `--list-password`.
+The client is anonymous by default: it resolves the server's public identity by
+hash and sends no identity of its own. Enabling «Identify this device» on a
+profile creates a device identity in the app sandbox
+(`files/portfwd/identity.id`, `0600`) and presents it on every Link for that
+profile, which is what a `--allow-identity SERVICE:HASH` allow-list checks. The
+app only ever shows the 32-hex hash, so it can be copied to the server
+operator. Server-side enumeration is private and needs the server's
+`--list-password`.
 
 ## Build
 
@@ -87,7 +98,10 @@ scripts/install-apk.sh       # installs and launches on the connected device
 
 `scripts/setup-toolchain.sh` needs host Python 3.10 or 3.11 (buildozer 1.5.0).
 The first build downloads the Android SDK/NDK into `~/.buildozer` if needed.
-`buildozer.spec` keeps `rns==1.5.7`, `libbz2` and `liblzma` pinned.
+`buildozer.spec` keeps `rns==1.6.0`, `libbz2` and `liblzma` pinned. Reticulum
+1.6 is required for link-request stamping; generate the APK again after
+changing that pin and re-check on the reference device, because Android stamp
+generation forks worker processes.
 
 ## Use
 
@@ -97,6 +111,13 @@ The first build downloads the Android SDK/NDK into `~/.buildozer` if needed.
    (service name, local port, TCP or UDP, and either a service password or the
    public switch), and press **Conectar**.
 3. Connect any app on the phone to `127.0.0.1:<local port>`.
+
+«Identificar este dispositivo» is off by default. Switching it on presents the
+device identity on every Link of that profile; press «Ver identidad» to read
+the 32-hex hash that the server needs in `--allow-identity SERVICE:HASH`.
+«Stamping de enlaces» defaults to «Automático», which follows the cost the
+server advertises; use «Desactivado» for diagnostics or «Coste personalizado»
+(0-40) when the announcement is missing.
 
 `Listar servicios` needs the server's `--list-password`; each row shows the
 protocol and whether the service asks for a password. `Probar` validates one
@@ -127,10 +148,11 @@ Integration tests start a private `rnsd`, a real `rns-portfwd-server` and the
 headless engine; they cover `list`, `probe`, two concurrent forwards, a 4 MiB
 binary transfer, half-close, authentication failure, port conflicts, disabled
 enumeration, UDP round trips (IPv4 and IPv6), per-source UDP isolation, public
-TCP/UDP forwards, mixed public/private links, protocol mismatches and UDP idle
-expiry. Unit tests cover validation, profiles, events, i18n parity, redaction,
-listeners (TCP and UDP), RNS startup, the notification manifest and the
-background facade.
+TCP/UDP forwards, mixed public/private links, protocol mismatches, UDP idle
+expiry, identity allow-lists and link-request stamping. Unit tests cover
+validation, profiles, events, i18n parity, redaction, listeners (TCP and UDP),
+RNS startup, the notification manifest and the background facade,
+identity storage, and the Link identify/stamp wiring.
 
 `tools/headless_engine.py` runs the engine without Kivy against a private
 Reticulum instance:
@@ -145,6 +167,9 @@ python3 tools/headless_engine.py <hash> \
 ```
 
 `--udp-idle-timeout` shortens the datagram idle timeout for tests.
+`--identity PATH` identifies the Link with a saved identity (created if
+missing), and `--stamp-mode auto|off|cost` with `--stamp-cost <0-40>` mirrors
+the profile stamp controls.
 
 ## Device verification
 
@@ -184,8 +209,13 @@ Evidence, logs and the checklist are in [`evidence/README.md`](evidence/README.m
 - HyperOS auto-grants `POST_NOTIFICATIONS` and does not expose it to
   `pm revoke`; the denied-permission fallback is implemented but was not
   triggerable in device testing.
-- `rns` is pinned to `1.5.7`; the vendored protocol has been exercised against
-  that version.
+- `rns` is pinned to `1.6.0`: identity allow-lists need `Link.identify()`
+  (already in 1.5) and link-request stamping needs the native stamp modules
+  from 1.6. On Android, stamp generation forks worker processes, so a pin
+  change must be re-validated on the device.
+- Stamp cost is taken from the server announcement (portfwd app data or the
+  native announce). If a server enforces stamps without advertising a cost,
+  the connection times out; set a custom cost in the profile.
 
 ## License
 

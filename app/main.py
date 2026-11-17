@@ -38,6 +38,7 @@ from portfwd_android.validation import (
     validate_password,
     validate_port,
     validate_protocol,
+    validate_stamp_config,
 )
 
 APP_VERSION = "0.2.0"
@@ -91,6 +92,26 @@ def _switch_screen(manager, name):
     manager.transition.stop()
 
 
+def _cost_text(value):
+    if value is None:
+        return ""
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _wrapped(label, height=None, color=None):
+    label.size_hint_y = None
+    label.height = dp(24) if height is None else height
+    label.halign = "left"
+    label.valign = "middle"
+    if color is not None:
+        label.color = color
+    label.bind(size=lambda *_, widget=label: setattr(widget, "text_size", (widget.width, None)))
+    return label
+
+
 class ForwardEditor(Popup):
     PROTOCOL_VALUES = ("TCP", "UDP")
 
@@ -125,7 +146,7 @@ class ForwardEditor(Popup):
         public_label = _label(t("editor.public"), halign="left", valign="middle")
         public_label.bind(size=lambda *_: setattr(public_label, "text_size", (public_label.width, None)))
         public_row.add_widget(public_label)
-        self.public = Switch(active=False, size_hint=(None, None), size=(dp(64), dp(32)))
+        self.public = Switch(active=False, size_hint=(None, None), size=(dp(84), dp(32)))
         public_row.add_widget(self.public)
         root.add_widget(public_row)
         self.password_label = _label(t("editor.password"), size_hint_y=None, height=dp(20))
@@ -262,6 +283,8 @@ class ServiceListPopup(Popup):
 
 
 class ConnectScreen(Screen):
+    STAMP_MODES = ("auto", "off", "cost")
+
     def __init__(self, app, **kwargs):
         super().__init__(**kwargs)
         self.app = app
@@ -271,6 +294,7 @@ class ConnectScreen(Screen):
         self._updating_profile = False
         self._selected_profile = None
         self._status_kind = None
+        self._identity_popup = None
 
         scroll = ScrollView()
         self.scroll = scroll
@@ -311,6 +335,39 @@ class ConnectScreen(Screen):
         root.add_widget(_label(t("connect.list_password.label"), size_hint_y=None, height=dp(22)))
         self.list_password = _input(t("connect.list_password.hint"), password=True)
         root.add_widget(self.list_password)
+
+        identity_row = BoxLayout(
+            size_hint_y=None, height=dp(38), spacing=dp(8), padding=(0, 0, dp(12), 0)
+        )
+        identity_label = _wrapped(_label(t("connect.identity.label")), height=dp(38))
+        identity_row.add_widget(identity_label)
+        # The defaulttheme switch image is 83x32: a smaller widget centres the
+        # image and lets its graphics spill outside the box.
+        self.identify = Switch(active=False, size_hint=(None, None), size=(dp(84), dp(32)))
+        identity_row.add_widget(self.identify)
+        root.add_widget(identity_row)
+        root.add_widget(_wrapped(_label(t("connect.identity.hint")), height=dp(56), color=(0.6, 0.65, 0.72, 1)))
+        root.add_widget(_button(t("connect.identity.show"), self.show_identity, color=(0.22, 0.3, 0.4, 1)))
+
+        root.add_widget(_label(t("connect.stamp.label"), size_hint_y=None, height=dp(22)))
+        self.stamp_mode = Spinner(
+            text=self._stamp_labels()["auto"],
+            values=self._stamp_values(),
+            size_hint_y=None,
+            height=dp(44),
+            background_normal="",
+            background_color=(0.16, 0.2, 0.27, 1),
+        )
+        self.stamp_mode.bind(text=self._stamp_changed)
+        root.add_widget(self.stamp_mode)
+        self.stamp_cost_label = _label(t("connect.stamp.cost"), size_hint_y=None, height=dp(22))
+        root.add_widget(self.stamp_cost_label)
+        self.stamp_cost = _input(t("connect.stamp.cost"))
+        self.stamp_cost.input_type = "number"
+        self.stamp_cost.input_filter = "float"
+        root.add_widget(self.stamp_cost)
+        root.add_widget(_wrapped(_label(t("connect.stamp.hint")), height=dp(36), color=(0.6, 0.65, 0.72, 1)))
+        self._stamp_changed(self.stamp_mode, self.stamp_mode.text)
 
         root.add_widget(_label(t("connect.forwards.title"), size_hint_y=None, height=dp(24)))
         self.forward_box = BoxLayout(orientation="vertical", spacing=dp(4), size_hint_y=None)
@@ -355,6 +412,9 @@ class ConnectScreen(Screen):
             "forwards": [dict(forward) for forward in self.forwards],
             "list_password": self.list_password.text,
             "profile_id": self._selected_profile,
+            "identify": bool(self.identify.active),
+            "stamp_mode": self._stamp_id(),
+            "stamp_cost": self.stamp_cost.text,
         }
 
     def restore(self, state):
@@ -364,6 +424,9 @@ class ConnectScreen(Screen):
         self.server.text = state.get("hash", "")
         self.forwards = [dict(forward) for forward in state.get("forwards", [])]
         self.list_password.text = state.get("list_password", "")
+        self.identify.active = bool(state.get("identify"))
+        self._set_stamp_mode(state.get("stamp_mode"))
+        self.stamp_cost.text = state.get("stamp_cost") or ""
         self._selected_profile = state.get("profile_id")
         self.refresh_forward_rows()
         self.refresh_profiles(select_id=self._selected_profile)
@@ -371,6 +434,107 @@ class ConnectScreen(Screen):
     def set_status(self, text, kind=None):
         self.status.text = text
         self._status_kind = kind
+
+    def _stamp_labels(self):
+        return {mode: t(f"connect.stamp.mode.{mode}") for mode in self.STAMP_MODES}
+
+    def _stamp_values(self):
+        labels = self._stamp_labels()
+        return [labels[mode] for mode in self.STAMP_MODES]
+
+    def _stamp_id(self):
+        labels = self._stamp_labels()
+        for mode in self.STAMP_MODES:
+            if labels[mode] == self.stamp_mode.text:
+                return mode
+        return "auto"
+
+    def _stamp_cost_value(self):
+        return self.stamp_cost.text if self._stamp_id() == "cost" else None
+
+    def _stamp_changed(self, _spinner, _text):
+        custom = self._stamp_id() == "cost"
+        self.stamp_cost.disabled = not custom
+        self.stamp_cost.opacity = 1 if custom else 0.4
+        self.stamp_cost_label.opacity = 1 if custom else 0.4
+
+    def _set_stamp_mode(self, mode):
+        labels = self._stamp_labels()
+        self.stamp_mode.text = labels.get(mode, labels["auto"])
+        self._stamp_changed(self.stamp_mode, self.stamp_mode.text)
+
+    def show_identity(self):
+        engine = self.app.engine
+        if engine is None:
+            self.set_status(_error_text("identity_error"), "error")
+            return
+        try:
+            identity = engine.identity_hash()
+        except Exception as error:
+            self.set_status(_error_text("identity_error", message=str(error)), "error")
+            return
+        if not identity:
+            self.set_status(_error_text("identity_error"), "error")
+            return
+        identity = str(identity)
+
+        self._close_identity_popup()
+        content = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(12))
+        content.add_widget(_label(t("connect.identity.hash_label"), size_hint_y=None, height=dp(22)))
+        hash_label = _label(
+            identity,
+            size_hint_y=None,
+            height=dp(48),
+            halign="center",
+            valign="middle",
+            font_size=sp(17),
+        )
+        hash_label.bind(size=lambda *_, widget=hash_label: setattr(widget, "text_size", (widget.width, None)))
+        content.add_widget(hash_label)
+        copied = _label("", size_hint_y=None, height=dp(24), color=(0.6, 0.9, 0.65, 1))
+        content.add_widget(copied)
+        note = _wrapped(
+            _label(t("connect.identity.note")),
+            height=dp(56),
+            color=(1, 0.8, 0.4, 1),
+        )
+        content.add_widget(note)
+        content.add_widget(BoxLayout())
+        buttons = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        buttons.add_widget(_button(t("connect.identity.copy"), lambda: self._copy_identity(identity, copied)))
+        buttons.add_widget(
+            _button(t("common.close"), self._close_identity_popup, color=(0.22, 0.24, 0.3, 1))
+        )
+        content.add_widget(buttons)
+        self._identity_popup = Popup(
+            title=t("connect.identity.title"),
+            content=content,
+            size_hint=(0.92, 0.62),
+            auto_dismiss=False,
+        )
+        self._identity_popup.open()
+
+    def _copy_identity(self, identity, notice):
+        try:
+            from kivy.core.clipboard import Clipboard
+
+            Clipboard.copy(identity)
+        except Exception as error:
+            notice.text = _error_text("identity_error", message=str(error))
+            notice.color = (1, 0.65, 0.4, 1)
+            return
+        notice.color = (0.6, 0.9, 0.65, 1)
+        notice.text = t("connect.identity.copied")
+
+    def _close_identity_popup(self):
+        popup = self._identity_popup
+        self._identity_popup = None
+        if popup is None:
+            return
+        try:
+            popup.dismiss()
+        except Exception:
+            pass
 
     def refresh_profiles(self, select_id=None):
         self._updating_profile = True
@@ -420,6 +584,9 @@ class ConnectScreen(Screen):
         self.server.text = entry.get("hash", "")
         self.forwards = [dict(forward) for forward in entry.get("forwards", [])]
         self.list_password.text = entry.get("list_password") or ""
+        self.identify.active = bool(entry.get("identify"))
+        self._set_stamp_mode(entry.get("stamp_mode"))
+        self.stamp_cost.text = _cost_text(entry.get("stamp_cost"))
         self.refresh_forward_rows()
 
     def new_profile(self):
@@ -431,6 +598,9 @@ class ConnectScreen(Screen):
         self.server.text = ""
         self.list_password.text = ""
         self.forwards = []
+        self.identify.active = False
+        self._set_stamp_mode("auto")
+        self.stamp_cost.text = ""
         self.refresh_forward_rows()
         self.set_status("", None)
 
@@ -442,11 +612,19 @@ class ConnectScreen(Screen):
         except ValidationError as error:
             self.set_status(_error_text(error.code, error.field), "error")
             return
+        try:
+            stamp_mode, stamp_cost = validate_stamp_config(self._stamp_id(), self._stamp_cost_value())
+        except ValidationError as error:
+            self.set_status(_error_text(error.code, error.field), "error")
+            return
         entry = self.app.profiles.upsert(
             server_hash,
             self.label_input.text,
             forwards,
             list_password,
+            identify=bool(self.identify.active),
+            stamp_mode=stamp_mode,
+            stamp_cost=stamp_cost,
         )
         self._selected_profile = entry["id"]
         self.refresh_profiles(select_id=entry["id"])
@@ -558,12 +736,20 @@ class ConnectScreen(Screen):
         except ValidationError as error:
             self.set_status(_error_text(error.code, error.field), "error")
             return
+        try:
+            stamp_mode, stamp_cost = validate_stamp_config(self._stamp_id(), self._stamp_cost_value())
+        except ValidationError as error:
+            self.set_status(_error_text(error.code, error.field), "error")
+            return
         error = self.app.connect(
             server_hash,
             self.label_input.text,
             forwards,
             list_password,
             self._selected_profile,
+            identify=bool(self.identify.active),
+            stamp_mode=stamp_mode,
+            stamp_cost=stamp_cost,
         )
         if error:
             self.set_status(error, "error")
@@ -571,7 +757,12 @@ class ConnectScreen(Screen):
         self.set_status(t("connect.status.connecting"), "transient")
 
     def list_services(self):
-        error = self.app.list_services(self.server.text, self.list_password.text)
+        error = self.app.list_services(
+            self.server.text,
+            self.list_password.text,
+            stamp_mode=self._stamp_id(),
+            stamp_cost=self._stamp_cost_value(),
+        )
         if error:
             self.set_status(error, "error")
         else:
@@ -579,7 +770,13 @@ class ConnectScreen(Screen):
 
     def probe(self, index):
         forward = self.forwards[index]
-        error = self.app.probe_forward(self.server.text, forward)
+        error = self.app.probe_forward(
+            self.server.text,
+            forward,
+            identify=bool(self.identify.active),
+            stamp_mode=self._stamp_id(),
+            stamp_cost=self._stamp_cost_value(),
+        )
         if error:
             self.set_status(error, "error")
 
@@ -837,7 +1034,10 @@ class PortfwdApp(App):
             self.session_screen.render(snapshot)
             self._sync_background(snapshot)
             return
-        if state == "error" and self.screens.current == "session":
+        if state == "error" and self.screens.current in ("session", "connect"):
+            # A session can fail before it ever reaches the session screen
+            # (a rejected credential or allow-list entry fails at probe time),
+            # so surface the error from the connect screen too.
             self._return_to_connect_with_error(session)
             return
         if state == "idle" and self.screens.current == "session" and not session.get("wanted"):
@@ -945,11 +1145,25 @@ class PortfwdApp(App):
             label,
             request["forwards"],
             request.get("list_password"),
+            identify=bool(request.get("identify")),
+            stamp_mode=request.get("stamp_mode", "auto"),
+            stamp_cost=request.get("stamp_cost"),
         )
         self.connect_screen.refresh_profiles(select_id=entry["id"])
         self._connect_request["profile_id"] = entry["id"]
 
-    def connect(self, server_hash, label, forwards, list_password, profile_id):
+    def connect(
+        self,
+        server_hash,
+        label,
+        forwards,
+        list_password,
+        profile_id,
+        *,
+        identify=False,
+        stamp_mode="auto",
+        stamp_cost=None,
+    ):
         if self.engine is None:
             return t("connect.status.no_engine")
         self.request_notifications(silent=True)
@@ -960,10 +1174,20 @@ class PortfwdApp(App):
             "forwards": [dict(forward) for forward in forwards],
             "list_password": list_password,
             "profile_id": profile_id,
+            "identify": bool(identify),
+            "stamp_mode": stamp_mode,
+            "stamp_cost": stamp_cost,
         }
         self._start_background_session(t("session.notification.connecting"))
         try:
-            self.engine.connect(server_hash, forwards, list_password)
+            self.engine.connect(
+                server_hash,
+                forwards,
+                list_password,
+                identify=bool(identify),
+                stamp_mode=stamp_mode,
+                stamp_cost=stamp_cost,
+            )
         except EngineError as error:
             self._connect_request = None
             self._stop_background_session()
@@ -991,21 +1215,41 @@ class PortfwdApp(App):
         self.connect_screen.set_status(t("connect.status.stopped"), "idle")
         _switch_screen(self.screens, "connect")
 
-    def list_services(self, server_hash, list_password):
+    def list_services(self, server_hash, list_password, *, stamp_mode="auto", stamp_cost=None):
         if self.engine is None:
             return t("connect.status.no_engine")
         try:
-            self.engine.list_services(server_hash, list_password)
+            self.engine.list_services(
+                server_hash,
+                list_password,
+                stamp_mode=stamp_mode,
+                stamp_cost=stamp_cost,
+            )
         except EngineError as error:
             return _error_text(error.code, error.field, str(error))
         self._show_listing_popup()
         return None
 
-    def probe_forward(self, server_hash, forward):
+    def probe_forward(
+        self,
+        server_hash,
+        forward,
+        *,
+        identify=False,
+        stamp_mode="auto",
+        stamp_cost=None,
+    ):
         if self.engine is None:
             return t("connect.status.no_engine")
         try:
-            self.engine.probe(server_hash, forward["name"], forward.get("password"))
+            self.engine.probe(
+                server_hash,
+                forward["name"],
+                forward.get("password"),
+                identify=bool(identify),
+                stamp_mode=stamp_mode,
+                stamp_cost=stamp_cost,
+            )
         except EngineError as error:
             return _error_text(error.code, error.field, str(error))
         self._show_probe_popup()
@@ -1200,6 +1444,7 @@ class PortfwdApp(App):
         self._language_rebuilding = True
         try:
             self._close_popups()
+            self.connect_screen._close_identity_popup()
             state = None
             if self.screens.current == "connect":
                 state = self.connect_screen.form_state()
@@ -1210,6 +1455,9 @@ class PortfwdApp(App):
                     "forwards": self._connect_request.get("forwards", []),
                     "list_password": self._connect_request.get("list_password", ""),
                     "profile_id": self._connect_request.get("profile_id"),
+                    "identify": self._connect_request.get("identify", False),
+                    "stamp_mode": self._connect_request.get("stamp_mode", "auto"),
+                    "stamp_cost": _cost_text(self._connect_request.get("stamp_cost")),
                 }
             self.screens.clear_widgets()
             self.connect_screen = ConnectScreen(self, name="connect")

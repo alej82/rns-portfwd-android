@@ -28,6 +28,14 @@ def parse_args():
     )
     parser.add_argument("--configdir", default=os.path.expanduser("~/.reticulum"))
     parser.add_argument("--statedir", default=None)
+    parser.add_argument(
+        "--identity",
+        metavar="PATH",
+        default=None,
+        help="identify the Link with this Reticulum identity file (created if missing)",
+    )
+    parser.add_argument("--stamp-mode", choices=("auto", "off", "cost"), default="auto")
+    parser.add_argument("--stamp-cost", type=float, default=None)
     parser.add_argument("--shared-port", type=int, default=37428)
     parser.add_argument("--control-port", type=int, default=37429)
     parser.add_argument("--udp-idle-timeout", type=float, default=None)
@@ -69,6 +77,8 @@ def main():
     engine_options = {}
     if args.udp_idle_timeout is not None:
         engine_options["udp_idle_timeout"] = args.udp_idle_timeout
+    if args.identity:
+        engine_options["identity_path"] = args.identity
     engine = Engine(
         rns_dir=args.configdir,
         config_dir=statedir,
@@ -84,13 +94,17 @@ def main():
         engine.shutdown()
         return 2
 
+    identify = bool(args.identity)
+    stamp_options = {"stamp_mode": args.stamp_mode, "stamp_cost": args.stamp_cost}
     try:
         if args.list:
-            engine.list_services(args.hash, args.list_password)
+            engine.list_services(args.hash, args.list_password, **stamp_options)
             return wait_aux(engine, "list", args.json)
         if args.probe:
             service, password = parse_probe(args.probe)
-            engine.probe(args.hash, service, password)
+            engine.probe(
+                args.hash, service, password, identify=identify, **stamp_options
+            )
             return wait_aux(engine, "probe", args.json)
         forwards = [parse_forward(value) for value in args.forward]
         forwards += [parse_forward(value, "udp") for value in args.forward_udp]
@@ -98,7 +112,13 @@ def main():
         forwards += [
             parse_forward(value, "udp", public=True) for value in args.forward_udp_public
         ]
-        engine.connect(args.hash, forwards, args.list_password or None)
+        engine.connect(
+            args.hash,
+            forwards,
+            args.list_password or None,
+            identify=identify,
+            **stamp_options,
+        )
     except ValidationError as error:
         print(f"invalid configuration: {error}", file=sys.stderr)
         engine.shutdown()

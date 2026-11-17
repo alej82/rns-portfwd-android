@@ -4,9 +4,9 @@
 
 Kivy/python-for-android shell for the `rns-portfwd` client. The forwarding
 engine is in `app/portfwd_android/`; the protocol is an unmodified vendor copy
-in `app/rns_portfwd/` (commit `a76e162`). The app targets API 33, min API 24,
+in `app/rns_portfwd/` (commit `ee2068a`). The app targets API 33, min API 24,
 `arm64-v8a`, and runs against the Reticulum shared instance on
-`127.0.0.1:37428`.
+`127.0.0.1:37428`. It pins `rns==1.6.0` so link-request stamping is available.
 
 ## Architecture rules
 
@@ -45,6 +45,23 @@ in `app/rns_portfwd/` (commit `a76e162`). The app targets API 33, min API 24,
 - **Secrets** live in the app sandbox (`profiles.json`, `0600`), are registered
   with `rns_portfwd.logging.register_secret()` and must never appear in logs,
   notifications or UI errors.
+- **The device identity is opt-in and per profile.** `profiles.json` carries
+  `identify` (default `False`); only then does `rns_ops.open_link` call
+  `Link.identify()` on an established Link, from that callback and before
+  `established.set()`, so no probe precedes the proof. The key lives in
+  `files/portfwd/identity.id` (`0600`, one per device) and only its 32-hex hash
+  is ever displayed. An identification race is expected: `/probe` is not
+  deferred by the server, so `rns_ops.probe_request` re-identifies and retries
+  a bounded number of times before reporting `auth`.
+- **Link stamping is configured in one place.** `rns_ops.open_link` calls the
+  vendor `configure_link_stamping()` right before creating the destination and
+  the `Link`, for the session, every reconnect, `list` and `probe`.
+  `stamp_mode` is `auto` (follow the advertised `stamp_cost`), `off` or `cost`.
+  The vendor helper mutates process-global `Transport.ALWAYS_STAMP_LRS` /
+  `LR_COST`, so never assume it survives a profile change: reconfigure on every
+  attempt. An incapable local Reticulum is a terminal `stamp_unsupported`
+  error, never a retry loop. Stamp generation happens in the session worker
+  thread; on Android it forks workers (`Stamps.job_android`).
 - **UI strings** go through `portfwd_android.i18n.t()`; server names, hashes,
   backend names and server error strings are never translated.
 - **Manifest invariants**: `android:allowBackup="false"`, the
@@ -62,12 +79,14 @@ app/portfwd_android/
   engine.py                  facade: transport, snapshot, events, list/probe
   session.py                 one session, probe, TCP streams, UDP datagram
                              sessions, reconnect supervisor
-  rns_ops.py                 resolve / open Link / request helpers
+  rns_ops.py                 resolve / open Link / identify / request helpers
+  identity.py                device identity file (0600) + public hash
   listeners.py               dual IPv4/IPv6 loopback listeners (TCP and UDP)
   reticulum.py               preflight + start-once RNS handling
   rns_config.py              managed shared-instance config (0600)
-  validation.py              hash/name/port/protocol/password validation
-  profiles.py                profiles.json (0600), protocol + nullable password
+  validation.py              hash/name/port/protocol/password/stamp validation
+  profiles.py                profiles.json (0600): protocol, nullable password,
+                             identify, stamp_mode, stamp_cost
   events.py                  bounded ordered event queue
   logbridge.py               RNS/portfwd logs -> redacted events
   i18n.py / messages.py      catalogs, fallback, error-code mapping
@@ -96,12 +115,28 @@ ruff check app tools tests
 scripts/setup-toolchain.sh
 scripts/build-apk.sh
 scripts/install-apk.sh
-openspec validate add-udp-and-public-forwards --strict
+openspec validate add-client-identity-and-stamping --strict
 openspec validate --all --strict
 ```
 
-Current verification: 108 tests pass (89 unit, 19 integration), ruff clean,
-OpenSpec strict valid, 36/37 tasks complete (device smoke test pending).
+Current verification: 196 tests pass (171 unit, 25 integration), ruff clean,
+OpenSpec strict valid, every task of `add-client-identity-and-stamping`
+complete, including the device pass (allow-list + stamping forward, anonymous
+rejection and reconnect after a shared-instance restart).
+
+## Build notes
+
+- Changing the version of a pure-python requirement is not enough for p4a:
+  `build-arm64-v8a/build/python-installs/<dist>/<arch>` is reused, so an older
+  package survives next to the new `*.dist-info`. Before rebuilding after a
+  pin change, delete the old package directory and both `*-dist-info` entries
+  (or the whole `python-installs/<dist>` and `dists/<dist>`), then verify the
+  APK bundle contains the new module.
+- `scripts/build-apk.sh` picks `~/.local/jdk17` or a system JDK 17; set
+  `JAVA_HOME` if the JDK lives elsewhere.
+- The APK payload is `lib/arm64-v8a/libpybundle.so` (gzip tar). To check what
+  was packaged:
+  `unzip -p bin/*.apk lib/arm64-v8a/libpybundle.so | tar -tzf - | grep RNS/`.
 
 ## Device workflow (POCO F2 Pro, `8ffbcdbf`)
 
@@ -148,6 +183,13 @@ OpenSpec strict valid, 36/37 tasks complete (device smoke test pending).
   UDP idle expiry.
 - `tests/unit/test_messages.py` covers error-code mapping without importing
   Kivy.
+- Identity tests use a temp `PORTFWD_CONFIG_DIR`; `identity.reset_cache()`
+  between cases. `rns_ops` tests fake `RNS.Link`/`RNS.Destination`, never a
+  `Reticulum` instance.
+- Integration: `start_server(extra=["--allow-identity", "svc:<hash>",
+  "--link-stamp-cost", "6"])` and `start_engine(extra=["--identity", path,
+  "--stamp-mode", "auto"])` exercise both features without new harness
+  helpers. The local `rns` must be 1.6.0 for stamping.
 - Protocol-mismatch errors are terminal: assert the `protocol_mismatch` event
   and the exit code, not a retry.
 - When changing UI strings, update `app/assets/i18n/translations.json` and

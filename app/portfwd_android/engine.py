@@ -11,7 +11,7 @@ from rns_portfwd.constants import (
 from rns_portfwd.errors import ResolutionError
 from rns_portfwd.logging import get_logger, register_secret
 
-from . import logbridge, rns_ops
+from . import identity, logbridge, rns_ops
 from .events import EventBus
 from .paths import prepare_environment
 from .reticulum import (
@@ -28,6 +28,7 @@ from .validation import (
     validate_hash,
     validate_name,
     validate_optional_password,
+    validate_stamp_config,
 )
 
 
@@ -52,10 +53,12 @@ class Engine:
         max_streams=DEFAULT_MAX_STREAMS,
         compress=True,
         udp_idle_timeout=DEFAULT_UDP_IDLE_TIMEOUT,
+        identity_path=None,
     ):
         prepare_environment()
         self.rns_dir = rns_dir or os.environ.get("PORTFWD_RNS_DIR") or os.path.expanduser("~/.reticulum")
         self.config_dir = config_dir or os.environ.get("PORTFWD_CONFIG_DIR")
+        self.identity_path = identity_path
         self.shared_port = int(shared_port)
         self.control_port = int(control_port)
         self.require_shared = bool(require_shared)
@@ -209,11 +212,33 @@ class Engine:
             register_secret(forward.get("password"))
         register_secret(list_password)
 
-    def connect(self, server_hash, forwards, list_password=None):
+    def _ensure_identity(self):
+        try:
+            return identity.ensure_identity(self.identity_path)
+        except identity.IdentityError as error:
+            raise EngineError("identity_error", str(error)) from None
+
+    def identity_hash(self):
+        try:
+            return identity.identity_hash(self.identity_path)
+        except identity.IdentityError as error:
+            raise EngineError("identity_error", str(error)) from None
+
+    def connect(
+        self,
+        server_hash,
+        forwards,
+        list_password=None,
+        *,
+        identify=False,
+        stamp_mode="auto",
+        stamp_cost=None,
+    ):
         try:
             resolved_hash, resolved_forwards, resolved_list = validate_config(
                 server_hash, forwards, list_password
             )
+            resolved_mode, resolved_cost = validate_stamp_config(stamp_mode, stamp_cost)
         except ValidationError as error:
             raise EngineError(error.code, str(error), getattr(error, "field", None)) from None
 
@@ -222,6 +247,7 @@ class Engine:
                 raise EngineError("busy", "a session is already active")
 
         self._ensure_transport()
+        client_identity = self._ensure_identity() if identify else None
         self._register_secrets(resolved_forwards, resolved_list)
         session = Session(
             engine=self,
@@ -238,6 +264,9 @@ class Engine:
             compress=self.compress,
             udp_idle_timeout=self.udp_idle_timeout,
             logger=self.logger,
+            client_identity=client_identity,
+            stamp_mode=resolved_mode,
+            stamp_cost=resolved_cost,
         )
         with self._lock:
             self._session = session
@@ -259,32 +288,54 @@ class Engine:
         with self._lock:
             return self._session is not None and self._session.active
 
-    def list_services(self, server_hash, list_password=None):
+    def list_services(self, server_hash, list_password=None, *, stamp_mode="auto", stamp_cost=None):
         try:
             resolved_hash = validate_hash(server_hash)
+            resolved_mode, resolved_cost = validate_stamp_config(stamp_mode, stamp_cost)
         except ValidationError as error:
             raise EngineError(error.code, str(error), error.field) from None
         if self._session_busy():
             raise EngineError("busy", "a session is already active")
         self._ensure_transport()
         register_secret(list_password)
-        self._start_aux("list", lambda: self._list_worker(resolved_hash, list_password or ""))
+        self._start_aux(
+            "list",
+            lambda: self._list_worker(
+                resolved_hash, list_password or "", resolved_mode, resolved_cost
+            ),
+        )
 
-    def probe(self, server_hash, service, password=None):
+    def probe(
+        self,
+        server_hash,
+        service,
+        password=None,
+        *,
+        identify=False,
+        stamp_mode="auto",
+        stamp_cost=None,
+    ):
         try:
             resolved_hash = validate_hash(server_hash)
             resolved_service = validate_name(service)
             resolved_password = validate_optional_password(password)
+            resolved_mode, resolved_cost = validate_stamp_config(stamp_mode, stamp_cost)
         except ValidationError as error:
             raise EngineError(error.code, str(error), error.field) from None
         if self._session_busy():
             raise EngineError("busy", "a session is already active")
         self._ensure_transport()
+        client_identity = self._ensure_identity() if identify else None
         register_secret(resolved_password)
         self._start_aux(
             "probe",
             lambda: self._probe_worker(
-                resolved_hash, resolved_service, resolved_password or ""
+                resolved_hash,
+                resolved_service,
+                resolved_password or "",
+                client_identity,
+                resolved_mode,
+                resolved_cost,
             ),
         )
 
@@ -311,7 +362,7 @@ class Engine:
                 self._aux_busy = False
                 self._aux_kind = None
 
-    def _list_worker(self, server_hash, password):
+    def _list_worker(self, server_hash, password, stamp_mode="auto", stamp_cost=None):
         link = None
         try:
             try:
@@ -322,10 +373,22 @@ class Engine:
                 self._publish_aux("list", {"ok": False, "error_code": "no_path", "services": []})
                 return
             try:
-                link = rns_ops.open_link(identity, self.connect_timeout)
+                link = rns_ops.open_link(
+                    identity,
+                    self.connect_timeout,
+                    server_hash=bytes.fromhex(server_hash),
+                    stamp_mode=stamp_mode,
+                    stamp_cost=stamp_cost,
+                    logger=self.logger,
+                )
                 response = rns_ops.link_request(
                     link, "/list", {"password": password}, self.connect_timeout
                 )
+            except rns_ops.StampUnsupported:
+                self._publish_aux(
+                    "list", {"ok": False, "error_code": "stamp_unsupported", "services": []}
+                )
+                return
             except Exception:
                 self._publish_aux("list", {"ok": False, "error_code": "link_failed", "services": []})
                 return
@@ -338,7 +401,15 @@ class Engine:
         finally:
             rns_ops.close_link(link)
 
-    def _probe_worker(self, server_hash, service, password):
+    def _probe_worker(
+        self,
+        server_hash,
+        service,
+        password,
+        client_identity=None,
+        stamp_mode="auto",
+        stamp_cost=None,
+    ):
         link = None
         try:
             try:
@@ -349,13 +420,27 @@ class Engine:
                 self._publish_aux("probe", {"ok": False, "error_code": "no_path", "service": service})
                 return
             try:
-                link = rns_ops.open_link(identity, self.connect_timeout)
-                response = rns_ops.link_request(
-                    link,
-                    "/probe",
-                    {"service": service, "password": password},
+                link = rns_ops.open_link(
+                    identity,
                     self.connect_timeout,
+                    server_hash=bytes.fromhex(server_hash),
+                    client_identity=client_identity,
+                    stamp_mode=stamp_mode,
+                    stamp_cost=stamp_cost,
+                    logger=self.logger,
                 )
+                response = rns_ops.probe_request(
+                    link,
+                    service,
+                    password,
+                    self.connect_timeout,
+                    client_identity=client_identity,
+                )
+            except rns_ops.StampUnsupported:
+                self._publish_aux(
+                    "probe", {"ok": False, "error_code": "stamp_unsupported", "service": service}
+                )
+                return
             except Exception:
                 self._publish_aux("probe", {"ok": False, "error_code": "link_failed", "service": service})
                 return

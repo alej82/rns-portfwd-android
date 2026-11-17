@@ -19,6 +19,8 @@ UDP_PUBLIC_FORWARD = {
     "password": None,
 }
 
+CLIENT_IDENTITY = object()
+
 
 class Engine:
     def __init__(self):
@@ -496,3 +498,94 @@ def test_datagram_drops_are_counted_in_the_snapshot():
     item = session.snapshot()["forwards"][0]
     assert item["dropped"] == 3
     assert item["streams"] == 0
+
+
+def test_session_defaults_to_anonymous_and_automatic_stamping():
+    session = make_session()
+
+    assert session.client_identity is None
+    assert session.stamp_mode == "auto"
+    assert session.stamp_cost is None
+
+
+def test_identity_and_stamp_policy_reach_open_link(monkeypatch):
+    session = make_session(client_identity=CLIENT_IDENTITY, stamp_mode="cost", stamp_cost=9.0)
+    monkeypatch.setattr(session_module.rns_ops, "resolve_identity", lambda *a, **k: "server")
+    calls = []
+
+    def fake_open_link(identity, timeout, stop_event=None, on_closed=None, **kwargs):
+        calls.append((identity, kwargs))
+        raise session_module.rns_ops.Cancelled("stop")
+
+    monkeypatch.setattr(session_module.rns_ops, "open_link", fake_open_link)
+
+    with pytest.raises(session_module.rns_ops.Cancelled):
+        session._establish()
+
+    ((identity, kwargs),) = calls
+    assert identity == "server"
+    assert kwargs["client_identity"] is CLIENT_IDENTITY
+    assert kwargs["stamp_mode"] == "cost"
+    assert kwargs["stamp_cost"] == 9.0
+    assert kwargs["server_hash"] == bytes.fromhex("a" * 32)
+
+
+def test_anonymous_session_does_not_pass_a_client_identity(monkeypatch):
+    session = make_session()
+    monkeypatch.setattr(session_module.rns_ops, "resolve_identity", lambda *a, **k: "server")
+    calls = []
+
+    def fake_open_link(identity, timeout, stop_event=None, on_closed=None, **kwargs):
+        calls.append(kwargs)
+        raise session_module.rns_ops.Cancelled("stop")
+
+    monkeypatch.setattr(session_module.rns_ops, "open_link", fake_open_link)
+
+    with pytest.raises(session_module.rns_ops.Cancelled):
+        session._establish()
+
+    assert calls[0]["client_identity"] is None
+    assert calls[0]["stamp_mode"] == "auto"
+    assert calls[0]["stamp_cost"] is None
+
+
+def test_probe_all_forwards_the_client_identity(monkeypatch):
+    session = make_session(client_identity=CLIENT_IDENTITY)
+    calls = []
+
+    def fake_probe(link, service, password, timeout, stop_event=None, *, client_identity=None):
+        calls.append((service, client_identity))
+        return {"ok": True, "service": {"name": service, "protocol": "tcp"}}
+
+    monkeypatch.setattr(session_module.rns_ops, "probe_request", fake_probe)
+
+    session._probe_all(object())
+
+    assert calls == [("ssh", CLIENT_IDENTITY)]
+
+
+def test_stamp_unsupported_is_terminal_and_not_retried(monkeypatch):
+    session = make_session(client_identity=CLIENT_IDENTITY, stamp_mode="cost", stamp_cost=9.0)
+    monkeypatch.setattr(session_module.rns_ops, "resolve_identity", lambda *a, **k: "server")
+    opens = []
+
+    def fake_open_link(*args, **kwargs):
+        opens.append(kwargs)
+        raise session_module.rns_ops.StampUnsupported("this Reticulum cannot generate stamps")
+
+    monkeypatch.setattr(session_module.rns_ops, "open_link", fake_open_link)
+
+    session.start()
+    session._thread.join(timeout=5)
+    snapshot = session.snapshot()
+
+    assert session._thread.is_alive() is False
+    assert snapshot["state"] == "error"
+    assert snapshot["wanted"] is False
+    assert snapshot["error_code"] == "stamp_unsupported"
+    assert "cannot generate stamps" in snapshot["error"]
+    assert len(opens) == 1
+    published = [args[1] for args, _kwargs in session.engine.events if len(args) > 1]
+    assert "session_retry" not in published
+    assert published[-1] == "session_state"
+
