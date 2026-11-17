@@ -53,16 +53,6 @@
       "context": "Navigation buttons",
       "file": "app/main.py"
     },
-    "connect.title": {
-      "en": "RNS Portfwd",
-      "context": "Main screen title",
-      "file": "app/main.py"
-    },
-    "connect.subtitle": {
-      "en": "Forward local TCP and UDP ports over Reticulum",
-      "context": "Main screen subtitle",
-      "file": "app/main.py"
-    },
     "connect.profile.label": {
       "en": "Profile",
       "context": "Saved profile selector",

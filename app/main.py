@@ -17,6 +17,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.switch import Switch
 from kivy.uix.textinput import TextInput
+from kivy.uix.widget import Widget
 from portfwd_android import background
 from portfwd_android.engine import Engine, EngineError
 from portfwd_android.i18n import (
@@ -305,8 +306,6 @@ class ConnectScreen(Screen):
         scroll.add_widget(root)
         self.add_widget(scroll)
 
-        root.add_widget(_title(t("connect.title")))
-        root.add_widget(_label(t("connect.subtitle"), size_hint_y=None, height=dp(24)))
         root.add_widget(_label(t("connect.profile.label"), size_hint_y=None, height=dp(22)))
         self.profile = Spinner(
             text=t("connect.profile.empty"),
@@ -329,6 +328,7 @@ class ConnectScreen(Screen):
             _button(t("connect.profile.new"), self.new_profile, color=(0.22, 0.24, 0.3, 1))
         )
         root.add_widget(profile_actions)
+        root.add_widget(Widget(size_hint_y=None, height=dp(10)))
 
         root.add_widget(_label(t("connect.hash.label"), size_hint_y=None, height=dp(22)))
         self.server = _input(t("connect.hash.hint"))

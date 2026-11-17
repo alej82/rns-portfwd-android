@@ -8,8 +8,6 @@
   "common.remove": "Quitar",
   "common.ok": "Aceptar",
   "common.back": "Volver",
-  "connect.title": "RNS Portfwd",
-  "connect.subtitle": "Reenvía puertos TCP y UDP locales por Reticulum",
   "connect.profile.label": "Perfil",
   "connect.profile.empty": "Sin perfiles guardados",
   "connect.profile.label_hint": "Etiqueta del perfil",
