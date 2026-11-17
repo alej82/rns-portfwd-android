@@ -12,8 +12,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-DEFAULT_JAVA="$HOME/.local/jdk17"
-[ -x "$DEFAULT_JAVA/bin/javac" ] || DEFAULT_JAVA="/usr/lib/jvm/java-17-openjdk"
+DEFAULT_JAVA=""
+for candidate in "$HOME/.local/jdk17" /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/java-17-openjdk /usr/lib/jvm/java-1.17.0-openjdk-amd64; do
+    if [ -x "$candidate/bin/javac" ]; then
+        DEFAULT_JAVA="$candidate"
+        break
+    fi
+done
+[ -n "$DEFAULT_JAVA" ] || { echo "error: no JDK 17 found (set JAVA_HOME)" >&2; exit 1; }
 export JAVA_HOME="${JAVA_HOME:-$DEFAULT_JAVA}"
 export PATH="$ROOT/.build-venv/bin:$JAVA_HOME/bin:$PATH"
 export VIRTUAL_ENV="$ROOT/.build-venv"

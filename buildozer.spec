@@ -9,7 +9,7 @@ source.include_exts = py,kv,png,jpg,atlas,json,ttf
 
 version = 0.2.0
 
-requirements = python3,kivy,pyjnius,android,cryptography,cffi,pyserial,setuptools,rns==1.5.7,libbz2,liblzma
+requirements = python3,kivy,pyjnius,android,cryptography,cffi,pyserial,setuptools,rns==1.6.0,libbz2,liblzma
 
 orientation = portrait
 fullscreen = 0
