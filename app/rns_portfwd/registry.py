@@ -7,6 +7,7 @@ from collections import defaultdict
 
 from .auth import constant_time_equals, dummy_compare
 from .config import Service
+from .constants import DEFAULT_MAX_CONNECTIONS_PER_PUBLIC
 
 
 class ServiceRegistry:
@@ -15,10 +16,12 @@ class ServiceRegistry:
         services: list[Service],
         list_password: str | None,
         max_connections_per_service: int,
+        max_connections_per_public: int = DEFAULT_MAX_CONNECTIONS_PER_PUBLIC,
     ):
         self._services = {service.name: service for service in services}
         self._list_password = list_password
         self._max_connections = max_connections_per_service
+        self._max_public_connections = max_connections_per_public
         self._active: dict[str, int] = defaultdict(int)
         self._lock = threading.Lock()
 
@@ -39,6 +42,8 @@ class ServiceRegistry:
         if service is None:
             dummy_compare(password)
             return None
+        if service.password is None:
+            return service
         if constant_time_equals(password, service.password):
             return service
         return None
@@ -52,9 +57,16 @@ class ServiceRegistry:
             return None
         return service.public()
 
+    def _limit_for(self, name: str) -> int:
+        service = self._services.get(name)
+        if service is not None and service.password is None:
+            return self._max_public_connections
+        return self._max_connections
+
     def acquire(self, name: str) -> bool:
+        limit = self._limit_for(name)
         with self._lock:
-            if self._active[name] >= self._max_connections:
+            if self._active[name] >= limit:
                 return False
             self._active[name] += 1
             return True

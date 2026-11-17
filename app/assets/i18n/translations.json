@@ -59,7 +59,7 @@
       "file": "app/main.py"
     },
     "connect.subtitle": {
-      "en": "Forward local TCP ports over Reticulum",
+      "en": "Forward local TCP and UDP ports over Reticulum",
       "context": "Main screen subtitle",
       "file": "app/main.py"
     },
@@ -136,6 +136,11 @@
     "connect.forwards.duplicate_service": {
       "en": "Warning: more than one forward opens the service {names}. Each forward uses the service name written here, not the local port. Edit a forward if you expected a different service.",
       "context": "Shown when two or more forwards target the same service name",
+      "file": "app/main.py"
+    },
+    "connect.forwards.public": {
+      "en": "public",
+      "context": "Badge on a forward that has no password",
       "file": "app/main.py"
     },
     "connect.list_password.label": {
@@ -243,9 +248,24 @@
       "context": "Forward port placeholder",
       "file": "app/main.py"
     },
+    "editor.protocol": {
+      "en": "Protocol",
+      "context": "Forward protocol selector label",
+      "file": "app/main.py"
+    },
     "editor.password": {
       "en": "Service password",
       "context": "Forward editor field",
+      "file": "app/main.py"
+    },
+    "editor.public": {
+      "en": "Public service (no password)",
+      "context": "Switch that marks a forward as passwordless",
+      "file": "app/main.py"
+    },
+    "editor.public_hint": {
+      "en": "Anyone who knows the server hash can use it.",
+      "context": "Warning shown when the public switch is on",
       "file": "app/main.py"
     },
     "editor.error.name": {
@@ -298,18 +318,28 @@
       "context": "Enumeration auth error",
       "file": "app/main.py"
     },
+    "discovery.auth.yes": {
+      "en": "password required",
+      "context": "Service metadata: the service needs a password",
+      "file": "app/main.py"
+    },
+    "discovery.auth.no": {
+      "en": "no password",
+      "context": "Service metadata: the service is public",
+      "file": "app/main.py"
+    },
     "discovery.probe.title": {
       "en": "Probe service",
       "context": "Probe dialog title",
       "file": "app/main.py"
     },
     "discovery.probe.ok": {
-      "en": "{name}: credential accepted ({protocol}, auth={auth})",
+      "en": "{name}: credential accepted ({protocol}, {auth})",
       "context": "Probe success",
       "file": "app/main.py"
     },
     "discovery.probe.fail": {
-      "en": "The credential was rejected",
+      "en": "The credential was rejected. If the service is not public, set its password.",
       "context": "Probe auth error",
       "file": "app/main.py"
     },
@@ -324,7 +354,7 @@
       "file": "app/main.py"
     },
     "discovery.metadata": {
-      "en": "{name} · {protocol} · auth={auth}",
+      "en": "{name} · {protocol} · {auth}",
       "context": "Service metadata line",
       "file": "app/main.py"
     },
@@ -624,7 +654,7 @@
       "file": "app/main.py"
     },
     "error.auth": {
-      "en": "The service credential was rejected.",
+      "en": "The service credential was rejected. Use a password unless the service is public.",
       "context": "Auth error",
       "file": "app/main.py"
     },
@@ -691,6 +721,16 @@
     "error.port": {
       "en": "The local port must be 0 or between 1024 and 65535.",
       "context": "Port validation",
+      "file": "app/main.py"
+    },
+    "error.protocol": {
+      "en": "Choose TCP or UDP.",
+      "context": "Protocol validation",
+      "file": "app/main.py"
+    },
+    "error.protocol_mismatch": {
+      "en": "The server exposes {service} over {protocol}, but this forward uses {expected}.",
+      "context": "The service protocol differs from the forward protocol",
       "file": "app/main.py"
     },
     "error.password": {

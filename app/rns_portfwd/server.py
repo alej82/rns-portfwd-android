@@ -13,14 +13,17 @@ from .constants import (
     AUTH_FAILURE_DELAY,
     DEFAULT_AUTH_TIMEOUT,
     DEFAULT_BACKEND_TIMEOUT,
+    DEFAULT_MAX_CONNECTIONS_PER_PUBLIC,
     DEFAULT_MAX_CONNECTIONS_PER_SERVICE,
     DEFAULT_MAX_LINKS,
     DEFAULT_MAX_STREAMS,
+    DEFAULT_UDP_IDLE_TIMEOUT,
     DEFAULT_WINDOW,
     MAX_AUTH_FAILURES,
     PROTOCOL_VERSION,
     ErrorCode,
 )
+from .datagrams import DatagramSession
 from .discovery import (
     init_reticulum,
     load_or_create_identity,
@@ -30,7 +33,7 @@ from .discovery import (
 from .mux import Mux
 from .protocol import register_message_types
 from .registry import ServiceRegistry
-from .streams import StreamSession
+from .streams import SessionBase, StreamSession
 
 
 class LinkContext:
@@ -61,8 +64,10 @@ class PortfwdServer:
         max_links: int = DEFAULT_MAX_LINKS,
         max_streams: int = DEFAULT_MAX_STREAMS,
         max_connections_per_service: int = DEFAULT_MAX_CONNECTIONS_PER_SERVICE,
+        max_connections_per_public: int = DEFAULT_MAX_CONNECTIONS_PER_PUBLIC,
         auth_timeout: float = DEFAULT_AUTH_TIMEOUT,
         backend_timeout: float = DEFAULT_BACKEND_TIMEOUT,
+        udp_idle_timeout: float = DEFAULT_UDP_IDLE_TIMEOUT,
         verbosity: int = 0,
     ):
         self.services = services
@@ -79,17 +84,20 @@ class PortfwdServer:
         self.max_streams = max_streams
         self.auth_timeout = auth_timeout
         self.backend_timeout = backend_timeout
+        self.udp_idle_timeout = udp_idle_timeout
         self.verbosity = verbosity
 
         self.registry = ServiceRegistry(
             services=services,
             list_password=list_password,
             max_connections_per_service=max_connections_per_service,
+            max_connections_per_public=max_connections_per_public,
         )
         self.destination = None
         self.identity = None
         self.reticulum = None
         self._links: dict[int, LinkContext] = {}
+        self._link_ids: dict[bytes, LinkContext] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._announce_thread: threading.Thread | None = None
@@ -156,6 +164,7 @@ class PortfwdServer:
         with self._lock:
             contexts = list(self._links.values())
             self._links.clear()
+            self._link_ids.clear()
         for ctx in contexts:
             ctx.closing = True
             if ctx.timer is not None:
@@ -213,6 +222,7 @@ class PortfwdServer:
         ctx.timer.start()
         with self._lock:
             self._links[id(link)] = ctx
+            self._link_ids[link.link_id] = ctx
         self.logger.debug("link established from %s", getattr(link, "link_id", b"").hex())
 
     def _auth_timeout(self, ctx: LinkContext) -> None:
@@ -228,6 +238,7 @@ class PortfwdServer:
         ctx = None
         with self._lock:
             ctx = self._links.pop(id(link), None)
+            self._link_ids.pop(getattr(link, "link_id", b""), None)
         if ctx is None:
             return
         ctx.closing = True
@@ -309,6 +320,9 @@ class PortfwdServer:
             self.registry.release(service_name)
 
     def _open_backend(self, ctx: LinkContext, service: Service, stream_id: int) -> None:
+        if service.protocol == "udp":
+            self._open_udp_backend(ctx, service, stream_id)
+            return
         if ctx.closing:
             self._release_reservation(ctx, stream_id)
             ctx.mux.release_reservation(stream_id)
@@ -359,7 +373,84 @@ class PortfwdServer:
         stream.start()
         self.logger.info("stream %s opened", stream.label)
 
-    def _stream_closed(self, ctx: LinkContext, stream: StreamSession) -> None:
+    def _open_udp_backend(self, ctx: LinkContext, service: Service, stream_id: int) -> None:
+        if ctx.closing:
+            self._release_reservation(ctx, stream_id)
+            ctx.mux.release_reservation(stream_id)
+            return
+        sock = self._connect_udp_backend(service)
+        if sock is None:
+            self.logger.warning("backend for service %s is unavailable", service.name)
+            self._release_reservation(ctx, stream_id)
+            ctx.mux.release_reservation(stream_id)
+            self._send_error(ctx, stream_id, ErrorCode.BACKEND)
+            return
+
+        if ctx.closing:
+            sock.close()
+            self._release_reservation(ctx, stream_id)
+            ctx.mux.release_reservation(stream_id)
+            return
+
+        session = DatagramSession(
+            stream_id=stream_id,
+            sock=sock,
+            transport=ctx.mux.transport,
+            window=self.window,
+            logger=self.logger,
+            on_closed=lambda closed, ctx=ctx: self._stream_closed(ctx, closed),
+            label=f"{service.name}/{stream_id}",
+            owns_socket=True,
+            idle_timeout=self.udp_idle_timeout,
+        )
+        session.service_name = service.name  # type: ignore[attr-defined]
+        if not ctx.mux.install(stream_id, session):
+            self._release_reservation(ctx, stream_id)
+            session.on_closed = None
+            session.abort("could not register stream", send_close=False)
+            self._send_error(ctx, stream_id, ErrorCode.LIMIT)
+            return
+        with self._lock:
+            ctx.reserved.pop(stream_id, None)
+
+        try:
+            ctx.mux.transport.send_open_ok(stream_id, self.window)
+        except Exception:
+            session.abort("could not confirm open", send_close=False)
+            return
+
+        session.start()
+        self.logger.info("stream %s opened", session.label)
+
+    def _connect_udp_backend(self, service: Service) -> socket.socket | None:
+        try:
+            addresses = socket.getaddrinfo(
+                service.host, service.port, type=socket.SOCK_DGRAM
+            )
+        except OSError:
+            return None
+        for family, socktype, proto, _, sockaddr in addresses:
+            sock = None
+            try:
+                sock = socket.socket(family, socktype, proto)
+                sock.connect(sockaddr)
+                sock.settimeout(None)
+                return sock
+            except OSError:
+                if sock is not None:
+                    sock.close()
+        return None
+
+    def _mark_authenticated(self, link_id) -> None:
+        with self._lock:
+            ctx = self._link_ids.get(link_id)
+        if ctx is None:
+            return
+        ctx.opened = True
+        if ctx.timer is not None:
+            ctx.timer.cancel()
+
+    def _stream_closed(self, ctx: LinkContext, stream: SessionBase) -> None:
         if ctx.mux is not None:
             ctx.mux.remove(stream.stream_id)
         service_name = getattr(stream, "service_name", None)
@@ -378,6 +469,7 @@ class PortfwdServer:
 
             time.sleep(AUTH_FAILURE_DELAY)
             return {"ok": False, "error": "auth"}
+        self._mark_authenticated(link_id)
         return {"ok": True, "services": self.registry.list_public()}
 
     def _handle_probe(self, path, data, request_id, link_id, remote_identity, requested_at):
@@ -394,4 +486,5 @@ class PortfwdServer:
 
             time.sleep(AUTH_FAILURE_DELAY)
             return {"ok": False, "error": "auth"}
+        self._mark_authenticated(link_id)
         return {"ok": True, "service": public}

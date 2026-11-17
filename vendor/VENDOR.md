@@ -1,8 +1,8 @@
 # Vendored `rns-portfwd`
 
 - Upstream: `rns-portfwd`
-- Commit: `c2400eb` (`chore: license under GPL-3.0-or-later`)
-- Version: `0.1.0`
+- Commit: `a76e162` (`feat: support passwordless public services`)
+- Version: `0.2.0`
 - License: GPL-3.0-or-later
 - Local path: `app/rns_portfwd/`
 - Upstream path: `src/rns_portfwd/`
@@ -12,13 +12,23 @@
 
 ```
 __init__.py  auth.py  cli_client.py  cli_server.py  client.py  config.py
-constants.py credits.py  discovery.py  errors.py  link_manager.py  logging.py
-mux.py  protocol.py  registry.py  server.py  streams.py
+constants.py  credits.py  datagrams.py  discovery.py  errors.py
+link_manager.py  logging.py  mux.py  protocol.py  registry.py  server.py
+streams.py
 ```
 
 `app/rns_portfwd/` is copied verbatim. The app only imports it; it never
 modifies it. The mobile orchestration (shared-instance preflight, state
 machine, listeners, profiles, UI) lives in `app/portfwd_android/`.
+
+This snapshot adds UDP tunneling (`datagrams.py`, `MSG_DGRAM`) and
+passwordless public services (`Service.password`/`Forward.password` are
+`str | None`). `PROTOCOL_VERSION` stays at 1; the wire layout is unchanged.
+
+History note: the previous pin `c2400eb` (`chore: license under
+GPL-3.0-or-later`) no longer exists upstream because the history was
+rewritten; `b18a2b9` carries the same change and is its direct predecessor.
+
 
 ## Re-vendor procedure
 

@@ -6,6 +6,7 @@ from portfwd_android.validation import (
     validate_forward,
     validate_forwards,
     validate_hash,
+    validate_password,
     validate_port,
 )
 
@@ -17,7 +18,9 @@ def test_valid_config_is_normalised():
         "listpass",
     )
     assert server_hash == "a" * 32
-    assert forwards == [{"name": "ssh", "local_port": 2222, "password": "secret"}]
+    assert forwards == [
+        {"name": "ssh", "local_port": 2222, "protocol": "tcp", "password": "secret"}
+    ]
     assert list_password == "listpass"
 
 
@@ -51,9 +54,62 @@ def test_invalid_names(name):
 
 def test_password_validation():
     with pytest.raises(ValidationError):
-        validate_forward({"name": "ssh", "local_port": 2222, "password": ""})
-    with pytest.raises(ValidationError):
         validate_forward({"name": "ssh", "local_port": 2222, "password": "x" * 4097})
+    with pytest.raises(ValidationError):
+        validate_password(None, "password")
+    with pytest.raises(ValidationError):
+        validate_password("", "password")
+
+
+def test_forward_protocol_defaults_to_tcp_and_accepts_udp():
+    tcp = validate_forward({"name": "ssh", "local_port": 2222, "password": "x"})
+    udp = validate_forward(
+        {"name": "dns", "local_port": 5353, "password": "x", "protocol": "UDP"}
+    )
+    assert tcp["protocol"] == "tcp"
+    assert udp["protocol"] == "udp"
+    with pytest.raises(ValidationError) as error:
+        validate_forward(
+            {"name": "dns", "local_port": 5353, "password": "x", "protocol": "sctp"}
+        )
+    assert error.value.field == "protocol"
+
+
+def test_missing_or_empty_password_means_public():
+    for value in (None, ""):
+        forward = validate_forward(
+            {"name": "web", "local_port": 8080, "protocol": "udp", "password": value}
+        )
+        assert forward["password"] is None
+        assert forward["protocol"] == "udp"
+
+
+def test_tcp_and_udp_may_share_a_port_but_not_within_a_protocol():
+    forwards = validate_forwards(
+        [
+            {"name": "a", "local_port": 8080, "password": None},
+            {"name": "b", "local_port": 8080, "protocol": "udp", "password": "x"},
+        ]
+    )
+    assert [forward["protocol"] for forward in forwards] == ["tcp", "udp"]
+    with pytest.raises(ValidationError) as error:
+        validate_forwards(
+            [
+                {"name": "a", "local_port": 8080, "protocol": "udp", "password": "x"},
+                {"name": "b", "local_port": 8080, "protocol": "udp", "password": "y"},
+            ]
+        )
+    assert error.value.code == "port_in_use"
+
+
+def test_public_forward_reaches_the_vendor_dataclass_as_none():
+    from portfwd_android.validation import to_vendor_forwards
+
+    resolved = validate_forwards([{"name": "web", "local_port": 8080, "password": None}])
+    (vendor_forward,) = to_vendor_forwards(resolved)
+    assert vendor_forward.password is None
+    assert vendor_forward.protocol == "tcp"
+    assert vendor_forward.local_port == 8080
 
 
 def test_duplicate_ports_are_rejected_but_zero_is_repeatable():

@@ -9,6 +9,18 @@ def _forwards():
     return [{"name": "ssh", "local_port": 2222, "password": "s3cret"}]
 
 
+def _stored(forwards):
+    return [
+        {
+            "name": forward["name"],
+            "local_port": forward["local_port"],
+            "protocol": forward.get("protocol") or "tcp",
+            "password": forward.get("password"),
+        }
+        for forward in forwards
+    ]
+
+
 def test_upsert_orders_by_recent_and_deduplicates(tmp_path):
     path = tmp_path / "profiles.json"
     store = ProfileStore(str(path))
@@ -32,7 +44,7 @@ def test_file_is_private_and_reloads(tmp_path):
     assert json.loads(path.read_text())[0]["hash"] == "a" * 32
 
     reloaded = ProfileStore(str(path))
-    assert reloaded.get(entry["id"])["forwards"] == _forwards()
+    assert reloaded.get(entry["id"])["forwards"] == _stored(_forwards())
     assert reloaded.get(entry["id"])["label"] == "a" * 8
 
 
@@ -52,3 +64,59 @@ def test_corrupt_file_is_ignored(tmp_path):
     path = tmp_path / "profiles.json"
     path.write_text("not json")
     assert ProfileStore(str(path)).ordered() == []
+
+
+def test_legacy_profile_without_protocol_loads_as_tcp(tmp_path):
+    path = tmp_path / "profiles.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "abc",
+                    "hash": "a" * 32,
+                    "label": "old",
+                    "forwards": [{"name": "ssh", "local_port": 2222, "password": "s3cret"}],
+                    "list_password": None,
+                    "last_used": 1.0,
+                }
+            ]
+        )
+    )
+    entry = ProfileStore(str(path)).get("abc")
+    assert entry["forwards"] == _stored(_forwards())
+
+
+def test_public_udp_forward_round_trips(tmp_path):
+    path = tmp_path / "profiles.json"
+    forwards = [
+        {"name": "dns", "local_port": 5353, "protocol": "udp", "password": None},
+        {"name": "ssh", "local_port": 2222, "protocol": "tcp", "password": "s3cret"},
+    ]
+    store = ProfileStore(str(path))
+    entry = store.upsert("b" * 32, "mixed", forwards)
+    stored = ProfileStore(str(path)).get(entry["id"])["forwards"]
+    assert stored == _stored(forwards)
+    assert stored[0]["password"] is None
+    assert stored[0]["protocol"] == "udp"
+    raw = json.loads(path.read_text())[0]["forwards"][0]
+    assert raw["password"] is None
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_empty_password_in_legacy_file_is_loaded_as_public(tmp_path):
+    path = tmp_path / "profiles.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "abc",
+                    "hash": "a" * 32,
+                    "forwards": [
+                        {"name": "web", "local_port": 8080, "password": ""},
+                    ],
+                }
+            ]
+        )
+    )
+    entry = ProfileStore(str(path)).get("abc")
+    assert entry["forwards"][0]["password"] is None

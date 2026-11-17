@@ -11,6 +11,9 @@ from .client import PortfwdClient, run_list, run_probe
 from .config import (
     apply_forward_secrets,
     parse_forward,
+    parse_forward_public,
+    parse_forward_udp,
+    parse_forward_udp_public,
     read_secret_source,
     resolve_list_password,
     resolve_probe_password,
@@ -20,6 +23,7 @@ from .constants import (
     DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_MAX_STREAMS,
     DEFAULT_PATH_TIMEOUT,
+    DEFAULT_UDP_IDLE_TIMEOUT,
     DEFAULT_WINDOW,
     EXIT_OK,
     MAX_CREDIT,
@@ -34,6 +38,8 @@ examples:
   rns-portfwd-client list --server <hash> --list-password listpass
   rns-portfwd-client probe --server <hash> --service ssh --service-password s3cret
   rns-portfwd-client forward --server <hash> --forward ssh:2222:s3cret
+  rns-portfwd-client forward --server <hash> --forward-udp dns:5353:s3cret
+  rns-portfwd-client forward --server <hash> --forward-public web:8080
   rns-portfwd-client forward --server <hash> --forward ssh:2222:- --secrets-fd 3
 """
 
@@ -41,7 +47,7 @@ examples:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rns-portfwd-client",
-        description="Forward local TCP ports to services exposed over Reticulum.",
+        description="Forward local TCP and UDP ports to services exposed over Reticulum.",
         epilog=EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -92,11 +98,38 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="NAME:LOCAL_PORT:PASSWORD",
-        help="forward definition; may be repeated",
+        help="TCP forward definition; may be repeated",
+    )
+    forward.add_argument(
+        "--forward-udp",
+        action="append",
+        default=[],
+        metavar="NAME:LOCAL_PORT:PASSWORD",
+        help="UDP forward definition; may be repeated",
+    )
+    forward.add_argument(
+        "--forward-public",
+        action="append",
+        default=[],
+        metavar="NAME:LOCAL_PORT",
+        help="TCP forward to a passwordless service; may be repeated",
+    )
+    forward.add_argument(
+        "--forward-udp-public",
+        action="append",
+        default=[],
+        metavar="NAME:LOCAL_PORT",
+        help="UDP forward to a passwordless service; may be repeated",
     )
     forward.add_argument("--bind", default="127.0.0.1", help="local bind address")
     forward.add_argument("--window", type=int, default=DEFAULT_WINDOW)
     forward.add_argument("--max-streams", type=int, default=DEFAULT_MAX_STREAMS)
+    forward.add_argument(
+        "--udp-idle-timeout",
+        type=float,
+        default=DEFAULT_UDP_IDLE_TIMEOUT,
+        help="seconds before an idle UDP session is closed",
+    )
     forward.add_argument("--no-compress", action="store_true")
 
     listing = subparsers.add_parser("list", parents=[common], help="list public services")
@@ -142,11 +175,16 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "forward":
             forwards = [parse_forward(item) for item in args.forward]
+            forwards += [parse_forward_udp(item) for item in args.forward_udp]
+            forwards += [parse_forward_public(item) for item in args.forward_public]
+            forwards += [parse_forward_udp_public(item) for item in args.forward_udp_public]
             validate_forwards(forwards)
             if not 1024 <= args.window <= MAX_CREDIT:
                 raise ConfigError(f"--window must be between 1024 and {MAX_CREDIT}")
             if not 1 <= args.max_streams <= STREAM_ID_MAX:
                 raise ConfigError(f"--max-streams must be between 1 and {STREAM_ID_MAX}")
+            if args.udp_idle_timeout <= 0:
+                raise ConfigError("--udp-idle-timeout must be positive")
             forwards = apply_forward_secrets(forwards, document, source_used)
             for forward in forwards:
                 register_secret(forward.password)
@@ -162,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
                 window=args.window,
                 max_streams=args.max_streams,
                 compress=not args.no_compress,
+                udp_idle_timeout=args.udp_idle_timeout,
                 verbosity=args.verbose,
             )
 

@@ -13,6 +13,7 @@ from .constants import (
     MAX_CREDIT,
     MSG_CLOSE,
     MSG_DATA,
+    MSG_DGRAM,
     MSG_OPEN,
     MSG_OPEN_ERR,
     MSG_OPEN_OK,
@@ -53,8 +54,10 @@ def _check_close_reason(reason: object) -> int:
         raise ProtocolError(f"unknown close reason: {reason!r}") from None
 
 
-def _encode_text(value: object, *, field: str, limit: int) -> bytes:
-    if not isinstance(value, str) or not value:
+def _encode_text(
+    value: object, *, field: str, limit: int, allow_empty: bool = False
+) -> bytes:
+    if not isinstance(value, str) or (not value and not allow_empty):
         raise ProtocolError(f"{field} must be a non-empty string")
     encoded = value.encode("utf-8")
     if len(encoded) > limit:
@@ -83,7 +86,12 @@ class OpenMessage(RNS.MessageBase):
         if not isinstance(self.version, int) or not 0 <= self.version <= 255:
             raise ProtocolError("version must be an unsigned byte")
         service = _encode_text(self.service, field="service", limit=_MAX_SERVICE_LEN)
-        password = _encode_text(self.password, field="password", limit=_MAX_PASSWORD_LEN)
+        password = _encode_text(
+            self.password,
+            field="password",
+            limit=_MAX_PASSWORD_LEN,
+            allow_empty=True,
+        )
         return (
             struct.pack(">HBHH", stream_id, self.version, len(service), len(password))
             + service
@@ -214,6 +222,27 @@ class CloseMessage(RNS.MessageBase):
         _check_close_reason(self.reason)
 
 
+class DatagramMessage(RNS.MessageBase):
+    MSGTYPE = MSG_DGRAM
+
+    def __init__(self, stream_id=None, data=None):
+        self.stream_id = stream_id
+        self.data = data if data is not None else b""
+
+    def pack(self) -> bytes:
+        if not isinstance(self.data, (bytes, bytearray)):
+            raise ProtocolError("DGRAM payload must be bytes")
+        return struct.pack(">H", _check_stream_id(self.stream_id)) + bytes(self.data)
+
+    def unpack(self, raw: bytes):
+        if len(raw) < 2:
+            raise ProtocolError("DGRAM message is too short")
+        stream_id = struct.unpack(">H", raw[:2])[0]
+        _check_stream_id(stream_id)
+        self.stream_id = stream_id
+        self.data = raw[2:]
+
+
 MESSAGE_TYPES = (
     OpenMessage,
     OpenOkMessage,
@@ -221,6 +250,7 @@ MESSAGE_TYPES = (
     DataMessage,
     WindowMessage,
     CloseMessage,
+    DatagramMessage,
 )
 
 

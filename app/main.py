@@ -15,6 +15,7 @@ from kivy.uix.popup import Popup
 from kivy.uix.screenmanager import NoTransition, Screen, ScreenManager
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
+from kivy.uix.switch import Switch
 from kivy.uix.textinput import TextInput
 from portfwd_android import background
 from portfwd_android.engine import Engine, EngineError
@@ -36,9 +37,10 @@ from portfwd_android.validation import (
     validate_name,
     validate_password,
     validate_port,
+    validate_protocol,
 )
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 LOG_LIMIT = 200
 
 
@@ -90,7 +92,9 @@ def _switch_screen(manager, name):
 
 
 class ForwardEditor(Popup):
-    def __init__(self, app, forwards, index, on_save, **kwargs):
+    PROTOCOL_VALUES = ("TCP", "UDP")
+
+    def __init__(self, app, forwards, index, on_save, service=None, **kwargs):
         super().__init__(**kwargs)
         self.app = app
         self.forwards = forwards
@@ -98,19 +102,49 @@ class ForwardEditor(Popup):
         self.on_save = on_save
         existing = forwards[index] if index is not None else None
         self.title = t("editor.title.edit") if existing else t("editor.title.add")
-        self.size_hint = (0.92, 0.7)
+        self.size_hint = (0.94, 0.9)
 
-        root = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(12))
-        root.add_widget(_label(t("editor.service"), size_hint_y=None, height=dp(22)))
+        root = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(12))
+        root.add_widget(_label(t("editor.service"), size_hint_y=None, height=dp(20)))
         self.name = _input(t("editor.service"))
         root.add_widget(self.name)
-        root.add_widget(_label(t("editor.port"), size_hint_y=None, height=dp(22)))
+        root.add_widget(_label(t("editor.port"), size_hint_y=None, height=dp(20)))
         self.port = _input(t("editor.port.hint"))
         root.add_widget(self.port)
-        root.add_widget(_label(t("editor.password"), size_hint_y=None, height=dp(22)))
+        root.add_widget(_label(t("editor.protocol"), size_hint_y=None, height=dp(20)))
+        self.protocol = Spinner(
+            text=self.PROTOCOL_VALUES[0],
+            values=list(self.PROTOCOL_VALUES),
+            size_hint_y=None,
+            height=dp(44),
+            background_normal="",
+            background_color=(0.16, 0.2, 0.27, 1),
+        )
+        root.add_widget(self.protocol)
+        public_row = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(8))
+        public_label = _label(t("editor.public"), halign="left", valign="middle")
+        public_label.bind(size=lambda *_: setattr(public_label, "text_size", (public_label.width, None)))
+        public_row.add_widget(public_label)
+        self.public = Switch(active=False, size_hint=(None, None), size=(dp(64), dp(32)))
+        public_row.add_widget(self.public)
+        root.add_widget(public_row)
+        self.password_label = _label(t("editor.password"), size_hint_y=None, height=dp(20))
+        root.add_widget(self.password_label)
         self.password = _input(t("editor.password"), password=True)
         root.add_widget(self.password)
-        self.status = _label("", size_hint_y=None, height=dp(40), halign="left", valign="middle")
+        self.public_hint = _label(
+            t("editor.public_hint"),
+            size_hint_y=None,
+            height=dp(38),
+            halign="left",
+            valign="middle",
+            color=(1, 0.8, 0.4, 1),
+        )
+        self.public_hint.bind(
+            size=lambda *_: setattr(self.public_hint, "text_size", (self.public_hint.width, None))
+        )
+        root.add_widget(self.public_hint)
+        self.status = _label("", size_hint_y=None, height=dp(36), halign="left", valign="middle")
         self.status.bind(size=lambda *_: setattr(self.status, "text_size", (self.status.width, None)))
         root.add_widget(self.status)
         root.add_widget(BoxLayout())
@@ -120,26 +154,72 @@ class ForwardEditor(Popup):
         root.add_widget(buttons)
         self.content = root
 
+        self.public.bind(active=self._public_changed)
         if existing:
-            self.name.text = existing["name"]
-            self.port.text = str(existing["local_port"])
-            self.password.text = existing["password"]
+            self.name.text = existing.get("name", "")
+            self.port.text = str(existing.get("local_port", ""))
+            self._set_protocol(existing.get("protocol", "tcp"))
+            public = existing.get("password") is None
+            if not public:
+                self.password.text = existing["password"]
+            self.public.active = public
+        elif service:
+            self.name.text = str(service.get("name", ""))
+            self._set_protocol(service.get("protocol", "tcp"))
+            public = service.get("public")
+            if public is None:
+                public = not service.get("auth")
+            self.public.active = bool(public)
+        self._public_changed(self.public, self.public.active)
+
+    def _set_protocol(self, value):
+        text = str(value or "tcp").strip().upper()
+        self.protocol.text = text if text in self.PROTOCOL_VALUES else self.PROTOCOL_VALUES[0]
+
+    def _public_changed(self, _switch, active):
+        active = bool(active)
+        self.password.disabled = active
+        self.password.opacity = 0.4 if active else 1
+        self.password.height = 0 if active else dp(44)
+        self.password_label.height = 0 if active else dp(20)
+        self.password_label.opacity = 0 if active else 1
+        if active:
+            self.password.text = ""
+        self.public_hint.height = dp(38) if active else 0
+        self.public_hint.opacity = 1 if active else 0
 
     def save(self):
+        public = bool(self.public.active)
         try:
             name = validate_name(self.name.text)
             port = validate_port(self.port.text)
-            password = validate_password(self.password.text)
         except ValidationError as error:
             self.status.text = _error_text(error.code, error.field)
             return
+        try:
+            protocol = validate_protocol(self.protocol.text)
+        except ValidationError as error:
+            self.status.text = _error_text(error.code, error.field)
+            return
+        password = None
+        if not public:
+            try:
+                password = validate_password(self.password.text)
+            except ValidationError as error:
+                self.status.text = _error_text(error.code, error.field)
+                return
         for position, forward in enumerate(self.forwards):
-            if position == self.index:
+            if position == self.index or port == 0:
                 continue
-            if port != 0 and forward["local_port"] == port:
+            if forward.get("local_port") == port and forward.get("protocol", "tcp") == protocol:
                 self.status.text = t("editor.error.duplicate")
                 return
-        value = {"name": name, "local_port": port, "password": password}
+        value = {
+            "name": name,
+            "local_port": port,
+            "protocol": protocol,
+            "password": password,
+        }
         self.on_save(self.index, value)
         self.dismiss()
 
@@ -158,11 +238,15 @@ class ServiceListPopup(Popup):
             box.add_widget(_label(t("discovery.list.empty"), size_hint_y=None, height=dp(40)))
         for service in services:
             name = str(service.get("name", ""))
-            protocol = str(service.get("protocol", "tcp"))
+            protocol = str(service.get("protocol", "tcp")).upper()
             auth = service.get("auth")
-            auth_text = "yes" if auth else "no"
+            auth_text = t("discovery.auth.yes") if auth else t("discovery.auth.no")
             text = t("discovery.metadata", name=name, protocol=protocol, auth=auth_text)
-            button = _button(text, lambda value=name: self._pick(value), color=(0.18, 0.25, 0.35, 1))
+            button = _button(
+                text,
+                lambda value=service: self._pick(value),
+                color=(0.18, 0.25, 0.35, 1),
+            )
             button.size_hint_y = None
             button.height = dp(44)
             box.add_widget(button)
@@ -172,9 +256,9 @@ class ServiceListPopup(Popup):
         self.content = root
         self._on_pick = on_pick
 
-    def _pick(self, name):
+    def _pick(self, service):
         self.dismiss()
-        self._on_pick(name)
+        self._on_pick(service)
 
 
 class ConnectScreen(Screen):
@@ -395,8 +479,12 @@ class ConnectScreen(Screen):
         for index, forward in enumerate(self.forwards):
             row = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(74), spacing=dp(2))
             port = forward["local_port"] if forward["local_port"] else t("session.forward.ephemeral")
+            protocol = str(forward.get("protocol", "tcp")).upper()
+            summary_text = f"{forward['name']} · {port} · {protocol}"
+            if forward.get("password") is None:
+                summary_text += f" · {t('connect.forwards.public')}"
             summary = _label(
-                f"{forward['name']} · {port}",
+                summary_text,
                 size_hint_y=None,
                 height=dp(28),
                 halign="left",
@@ -579,7 +667,10 @@ class SessionScreen(Screen):
         self._render_forwards(snapshot.get("forwards") or [])
 
     def _render_forwards(self, forwards):
-        signature = tuple((item.get("name"), item.get("actual_port")) for item in forwards)
+        signature = tuple(
+            (item.get("name"), item.get("actual_port"), item.get("protocol"), item.get("public"))
+            for item in forwards
+        )
         if signature != self._forward_signature:
             self._forward_signature = signature
             self.forward_box.clear_widgets()
@@ -597,7 +688,10 @@ class SessionScreen(Screen):
         for item, (title, detail) in zip(forwards, self._forward_rows, strict=False):
             port = item.get("actual_port")
             port_text = str(port) if port else t("session.forward.ephemeral")
-            title.text = f"{item.get('name')} · {port_text}"
+            protocol = str(item.get("protocol", "tcp")).upper()
+            title.text = f"{item.get('name')} · {port_text} · {protocol}"
+            if item.get("public"):
+                title.text += f" · {t('connect.forwards.public')}"
             detail.text = (
                 f"{t('session.forward.streams')}: {item.get('streams', 0)} · "
                 f"{t('session.forward.bytes')}: {item.get('bytes_in', 0)} / {item.get('bytes_out', 0)}"
@@ -770,9 +864,15 @@ class PortfwdApp(App):
                 )
 
     def _return_to_connect_with_error(self, session):
+        params = {
+            key: value
+            for key, value in (session.get("error_params") or {}).items()
+            if value is not None
+        }
         message = _error_text(
             session.get("error_code") or "internal",
             message=session.get("error"),
+            **params,
         )
         self.connect_screen.set_status(message, "error")
         self._stop_background_session()
@@ -905,7 +1005,7 @@ class PortfwdApp(App):
         if self.engine is None:
             return t("connect.status.no_engine")
         try:
-            self.engine.probe(server_hash, forward["name"], forward["password"])
+            self.engine.probe(server_hash, forward["name"], forward.get("password"))
         except EngineError as error:
             return _error_text(error.code, error.field, str(error))
         self._show_probe_popup()
@@ -941,9 +1041,15 @@ class PortfwdApp(App):
         self._list_popup = popup
         popup.open()
 
-    def _pick_service(self, name):
-        editor = ForwardEditor(self, self.connect_screen.forwards, None, self.connect_screen._save_forward)
-        editor.name.text = name
+    def _pick_service(self, service):
+        service = dict(service or {})
+        editor = ForwardEditor(
+            self,
+            self.connect_screen.forwards,
+            None,
+            self.connect_screen._save_forward,
+            service=service,
+        )
         editor.open()
 
     def _show_probe_popup(self):
@@ -967,8 +1073,8 @@ class PortfwdApp(App):
             text = t(
                 "discovery.probe.ok",
                 name=service.get("name", ""),
-                protocol=service.get("protocol", "tcp"),
-                auth="yes" if service.get("auth") else "no",
+                protocol=str(service.get("protocol", "tcp")).upper(),
+                auth=t("discovery.auth.yes") if service.get("auth") else t("discovery.auth.no"),
             )
             color = (0.6, 0.9, 0.65, 1)
         else:

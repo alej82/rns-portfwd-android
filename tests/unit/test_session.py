@@ -1,5 +1,70 @@
+import threading
 
+import pytest
+from portfwd_android import session as session_module
+from portfwd_android.listeners import BoundListener
 from portfwd_android.session import Retryable, Session, Terminal, _jittered
+from rns_portfwd.errors import AuthError
+
+TCP_FORWARD = {
+    "name": "ssh",
+    "local_port": 2222,
+    "protocol": "tcp",
+    "password": "secret",
+}
+UDP_PUBLIC_FORWARD = {
+    "name": "dns",
+    "local_port": 5353,
+    "protocol": "udp",
+    "password": None,
+}
+
+
+class Engine:
+    def __init__(self):
+        self.events = []
+
+    def _publish_session(self, *args, **kwargs):
+        self.events.append((args, kwargs))
+
+
+def make_session(forwards=None, **kwargs):
+    return Session(
+        Engine(),
+        "a" * 32,
+        [dict(forward) for forward in (forwards or [TCP_FORWARD])],
+        "/tmp/rns",
+        37428,
+        37429,
+        True,
+        **kwargs,
+    )
+
+
+class FakeDatagramSocket:
+    """Scripted ``recvmsg``: ``None`` means a timeout, exhaustion an OSError."""
+
+    def __init__(self, items):
+        self._items = list(items)
+
+    def recvmsg(self, _size):
+        if not self._items:
+            raise OSError("socket gone")
+        item = self._items.pop(0)
+        if item is None:
+            raise TimeoutError("timed out")
+        data, flags, peer = item
+        return data, [], flags, peer
+
+
+def udp_bound(name, forward, sock):
+    return BoundListener(
+        name=name,
+        actual_port=int(forward["local_port"]),
+        forward=dict(forward),
+        sockets=[sock],
+        protocol="udp",
+    )
 
 
 def test_jitter_stays_within_expected_range():
@@ -12,13 +77,12 @@ def test_jitter_stays_within_expected_range():
 def test_error_types_carry_codes():
     assert Retryable("no_path").code == "no_path"
     assert Terminal("auth").code == "auth"
+    assert Terminal("protocol_mismatch", "mismatch", fields={"service": "dns"}).fields == {
+        "service": "dns"
+    }
 
 
 def test_initial_snapshot_is_jsonable():
-    class Engine:
-        def _publish_session(self, *_args, **_kwargs):
-            pass
-
     session = Session(
         Engine(),
         "a" * 32,
@@ -35,11 +99,41 @@ def test_initial_snapshot_is_jsonable():
     assert session.active is False
 
 
-def test_stop_without_start_is_safe():
-    class Engine:
-        def _publish_session(self, *_args, **_kwargs):
-            pass
+def test_snapshot_reports_protocol_and_public_state():
+    session = make_session([TCP_FORWARD, UDP_PUBLIC_FORWARD], udp_idle_timeout=5)
+    snapshot = session.snapshot()
+    first, second = snapshot["forwards"]
+    assert (first["protocol"], first["public"]) == ("tcp", False)
+    assert (second["protocol"], second["public"]) == ("udp", True)
+    assert snapshot["error_params"] == {}
+    assert session.udp_idle_timeout == 5.0
 
+
+def test_error_params_carry_terminal_fields():
+    session = make_session()
+    session._fail(
+        "protocol_mismatch",
+        "service 'dns' is udp, not tcp",
+        fields={"service": "dns", "expected": "tcp", "actual": "udp"},
+    )
+    snapshot = session.snapshot()
+    assert snapshot["error_code"] == "protocol_mismatch"
+    assert snapshot["error_params"] == {
+        "service": "dns",
+        "expected": "tcp",
+        "actual": "udp",
+    }
+    error_events = [
+        kwargs for args, kwargs in session.engine.events if args[1] == "error"
+    ]
+    assert error_events
+    assert error_events[-1]["actual"] == "udp"
+    assert error_events[-1]["code"] == "protocol_mismatch"
+    session.stop()
+    assert session.snapshot()["error_params"] == {}
+
+
+def test_stop_without_start_is_safe():
     session = Session(
         Engine(),
         "a" * 32,
@@ -52,3 +146,353 @@ def test_stop_without_start_is_safe():
     session.stop()
     assert session.state == "idle"
     assert session.snapshot()["wanted"] is False
+
+
+def test_udp_pending_buffer_is_bounded(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    peer = ("127.0.0.1", 40000)
+    items = [(f"datagram-{index}".encode(), 0, peer) for index in range(40)]
+    items.insert(20, None)  # exercise the timeout/reap branch
+    sock = FakeDatagramSocket(items)
+    session = make_session([forward])
+    monkeypatch.setattr(session, "_open_udp_session", lambda *args, **kwargs: None)
+
+    session._udp_loop(udp_bound(forward["name"], forward, sock), sock)
+
+    key = (forward["name"], sock, peer)
+    pending = session._udp_pending[key]
+    assert len(pending) == 32
+    assert pending[0] == b"datagram-0"
+
+
+def test_udp_pending_keys_are_bounded_by_max_streams(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    peers = [("127.0.0.1", 41000 + index) for index in range(6)]
+    sock = FakeDatagramSocket([(b"x", 0, peer) for peer in peers])
+    session = make_session([forward], max_streams=3)
+    monkeypatch.setattr(session, "_open_udp_session", lambda *args, **kwargs: None)
+
+    session._udp_loop(udp_bound(forward["name"], forward, sock), sock)
+
+    assert len(session._udp_pending) == 3
+
+
+def test_truncated_datagram_is_dropped(monkeypatch):
+    if not session_module._MSG_TRUNC:
+        pytest.skip("platform does not expose MSG_TRUNC")
+    forward = dict(UDP_PUBLIC_FORWARD)
+    peer = ("127.0.0.1", 40000)
+    sock = FakeDatagramSocket([(b"too-big", session_module._MSG_TRUNC, peer)])
+    session = make_session([forward])
+    monkeypatch.setattr(session, "_open_udp_session", lambda *args, **kwargs: None)
+
+    session._udp_loop(udp_bound(forward["name"], forward, sock), sock)
+
+    assert session._udp_pending == {}
+
+
+class FakeIdleSession:
+    label = "dns@5353/1"
+
+    def __init__(self, idle):
+        self.idle = idle
+        self.aborted = []
+
+    def idle_for(self, now=None):
+        return self.idle
+
+    def abort(self, reason, send_close=True):
+        self.aborted.append(reason)
+
+
+def test_idle_udp_session_is_reaped():
+    session = make_session([UDP_PUBLIC_FORWARD], udp_idle_timeout=5)
+    idle = FakeIdleSession(30.0)
+    busy = FakeIdleSession(0.2)
+    session._udp_sessions[("dns", object(), ("127.0.0.1", 1))] = idle
+    session._udp_sessions[("dns", object(), ("127.0.0.1", 2))] = busy
+
+    session._reap_udp_sessions()
+
+    assert idle.aborted == ["idle timeout"]
+    assert busy.aborted == []
+
+
+def test_stream_closed_purges_udp_mapping():
+    session = make_session([UDP_PUBLIC_FORWARD])
+    fake = FakeIdleSession(0.0)
+    fake.stream_id = 7
+    fake.bytes_in = 0
+    fake.bytes_out = 0
+    fake.opened_at = 0.0
+    fake.close_reason = "closed"
+    key = ("dns", object(), ("127.0.0.1", 1))
+    session._udp_sessions[key] = fake
+    session._active[7] = {"stream": fake, "name": "dns", "stats": session._forward_stats[0]}
+
+    session._stream_closed(session._forward_stats[0], "dns", fake)
+
+    assert key not in session._udp_sessions
+    assert session._active == {}
+
+
+class FakeTransport:
+    def __init__(self):
+        self.opens = []
+        self.windows = []
+
+    def send_open(self, stream_id, version, service, password):
+        self.opens.append((stream_id, version, service, password))
+
+    def send_window(self, stream_id, credit):
+        self.windows.append((stream_id, credit))
+
+
+class FakeMux:
+    def __init__(self):
+        self.transport = FakeTransport()
+        self.installed = {}
+        self.released = []
+
+    def wait_for_slot(self, timeout, stop_event):
+        return True
+
+    def allocate_id(self):
+        return 1
+
+    def reserve(self, stream_id):
+        return True
+
+    def release_reservation(self, stream_id):
+        self.released.append(stream_id)
+
+    def install(self, stream_id, stream):
+        self.installed[stream_id] = stream
+        return True
+
+    def get(self, stream_id):
+        return self.installed.get(stream_id)
+
+    def remove(self, stream_id):
+        self.installed.pop(stream_id, None)
+
+
+class FakeDatagramSession:
+    instances = []
+    preset_closed = False
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+        self.opened = threading.Event()
+        self.opened.set()
+        self.open_error = None
+        self.closed = FakeDatagramSession.preset_closed
+        self.bytes_in = 0
+        self.bytes_out = 0
+        self.opened_at = 0.0
+        self.close_reason = None
+        self.sent = []
+        self.started = False
+        FakeDatagramSession.instances.append(self)
+
+    def send_initial_window(self):
+        self.transport.send_window(self.stream_id, self.window)
+
+    def start(self):
+        self.started = True
+
+    def send_local(self, data):
+        self.sent.append(data)
+        return True
+
+    def abort(self, reason, send_close=True):
+        self.closed = True
+        self.close_reason = reason
+        if self.on_closed is not None:
+            self.on_closed(self)
+
+
+def test_open_udp_session_flushes_pending_and_registers(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    peer = ("127.0.0.1", 40000)
+    bound = udp_bound(forward["name"], forward, FakeDatagramSocket([]))
+    session = make_session([forward], window=4096)
+    mux = FakeMux()
+    session.mux = mux
+    session.link_ready = True
+    bound.stats = session._forward_stats[0]
+    key = (forward["name"], bound.sockets[0], peer)
+    session._udp_pending[key] = [b"first", b"second"]
+    FakeDatagramSession.instances = []
+    monkeypatch.setattr(session_module, "DatagramSession", FakeDatagramSession)
+
+    session._open_udp_session(bound, bound.sockets[0], peer, key)
+
+    stream = FakeDatagramSession.instances[0]
+    assert stream.transport is mux.transport
+    assert stream.peer == peer
+    assert stream.owns_socket is False
+    assert stream.idle_timeout == session.udp_idle_timeout
+    assert mux.transport.opens == [(1, 1, "dns", "")]
+    assert mux.transport.windows == [(1, 4096)]
+    assert stream.sent == [b"first", b"second"]
+    assert stream.started is True
+    assert session._udp_pending == {}
+    assert session._udp_sessions[key] is stream
+    assert session._active[1]["stream"] is stream
+    assert session._forward_stats[0]["streams"] == 1
+
+
+def _patch_probe(monkeypatch, responses):
+    requests = []
+
+    def fake_link_request(link, path, data, timeout, stop_event=None):
+        requests.append((path, dict(data)))
+        return responses.pop(0)
+
+    monkeypatch.setattr(session_module.rns_ops, "link_request", fake_link_request)
+    return requests
+
+
+def test_probe_accepts_matching_tcp_protocol(monkeypatch):
+    responses = [{"ok": True, "service": {"name": "ssh", "protocol": "tcp"}}]
+    requests = _patch_probe(monkeypatch, responses)
+    session = make_session([TCP_FORWARD])
+
+    session._probe_all(object())
+
+    assert requests == [("/probe", {"service": "ssh", "password": "secret"})]
+
+
+def test_probe_sends_empty_password_for_public_forward(monkeypatch):
+    responses = [{"ok": True, "service": {"name": "dns", "protocol": "udp"}}]
+    requests = _patch_probe(monkeypatch, responses)
+    session = make_session([UDP_PUBLIC_FORWARD])
+
+    session._probe_all(object())
+
+    assert requests == [("/probe", {"service": "dns", "password": ""})]
+
+
+def test_probe_rejects_protocol_mismatch(monkeypatch):
+    responses = [{"ok": True, "service": {"name": "dns", "protocol": "udp"}}]
+    _patch_probe(monkeypatch, responses)
+    session = make_session([TCP_FORWARD])
+
+    with pytest.raises(Terminal) as caught:
+        session._probe_all(object())
+
+    assert caught.value.code == "protocol_mismatch"
+    assert caught.value.fields == {"service": "ssh", "expected": "tcp", "actual": "udp"}
+
+
+def test_probe_missing_protocol_defaults_to_tcp(monkeypatch):
+    responses = [
+        {"ok": True, "service": {"name": "ssh"}},
+        {"ok": True, "service": {"name": "dns"}},
+    ]
+    _patch_probe(monkeypatch, responses)
+    session = make_session([TCP_FORWARD, UDP_PUBLIC_FORWARD])
+
+    with pytest.raises(Terminal) as caught:
+        session._probe_all(object())
+
+    assert caught.value.fields["actual"] == "tcp"
+    assert caught.value.fields["service"] == "dns"
+
+
+def test_probe_rejects_bad_credentials(monkeypatch):
+    responses = [{"ok": False}]
+    _patch_probe(monkeypatch, responses)
+    session = make_session([TCP_FORWARD])
+
+    with pytest.raises(AuthError):
+        session._probe_all(object())
+
+
+def test_probe_reuses_payload_for_duplicate_service_names(monkeypatch):
+    responses = [{"ok": True, "service": {"name": "ssh", "protocol": "tcp"}}]
+    requests = _patch_probe(monkeypatch, responses)
+    second = dict(TCP_FORWARD, local_port=2223)
+    session = make_session([TCP_FORWARD, second])
+
+    session._probe_all(object())
+
+    assert len(requests) == 1
+
+
+def test_send_open_failure_keeps_stream_accounting_consistent(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    peer = ("127.0.0.1", 40001)
+    bound = udp_bound(forward["name"], forward, FakeDatagramSocket([]))
+    session = make_session([forward], window=4096)
+    mux = FakeMux()
+    session.mux = mux
+    session.link_ready = True
+    bound.stats = session._forward_stats[0]
+    key = (forward["name"], bound.sockets[0], peer)
+    session._udp_pending[key] = [b"first"]
+
+    def boom(*_args):
+        raise OSError("link not ready")
+
+    mux.transport.send_open = boom
+    monkeypatch.setattr(session_module, "DatagramSession", FakeDatagramSession)
+    FakeDatagramSession.instances = []
+    FakeDatagramSession.preset_closed = False
+
+    session._open_udp_session(bound, bound.sockets[0], peer, key)
+
+    assert session._active == {}
+    assert session._forward_stats[0]["streams"] == 0
+    assert session.snapshot()["counters"]["streams"] == 0
+    assert session._udp_sessions == {}
+
+
+def test_already_closed_stream_is_not_registered(monkeypatch):
+    forward = dict(UDP_PUBLIC_FORWARD)
+    peer = ("127.0.0.1", 40002)
+    bound = udp_bound(forward["name"], forward, FakeDatagramSocket([]))
+    session = make_session([forward], window=4096)
+    mux = FakeMux()
+    session.mux = mux
+    session.link_ready = True
+    bound.stats = session._forward_stats[0]
+    key = (forward["name"], bound.sockets[0], peer)
+
+    monkeypatch.setattr(session_module, "DatagramSession", FakeDatagramSession)
+    FakeDatagramSession.instances = []
+    FakeDatagramSession.preset_closed = True
+    try:
+        session._open_udp_session(bound, bound.sockets[0], peer, key)
+    finally:
+        FakeDatagramSession.preset_closed = False
+
+    assert session._active == {}
+    assert session._forward_stats[0]["streams"] == 0
+
+
+def test_datagram_drops_are_counted_in_the_snapshot():
+    forward = dict(UDP_PUBLIC_FORWARD)
+    session = make_session([forward])
+    stream = FakeDatagramSession(
+        stream_id=3,
+        transport=FakeTransport(),
+        window=4096,
+        dropped_oversized=2,
+        dropped_queue_full=1,
+    )
+    stream.bytes_in = 10
+    stream.bytes_out = 20
+    session._active[3] = {
+        "stream": stream,
+        "name": forward["name"],
+        "stats": session._forward_stats[0],
+    }
+    session._forward_stats[0]["streams"] = 1
+
+    session._stream_closed(session._forward_stats[0], forward["name"], stream)
+
+    item = session.snapshot()["forwards"][0]
+    assert item["dropped"] == 3
+    assert item["streams"] == 0

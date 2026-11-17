@@ -6,6 +6,7 @@ _MAX_NAME = 255
 _MAX_SECRET = 4096
 _MIN_PORT = 1024
 _MAX_PORT = 65535
+PROTOCOLS = ("tcp", "udp")
 
 
 class ValidationError(ValueError):
@@ -37,6 +38,17 @@ def validate_name(value):
     return name
 
 
+def validate_protocol(value):
+    protocol = str(value or "tcp").strip().lower()
+    if protocol not in PROTOCOLS:
+        raise ValidationError(
+            "invalid protocol: use 'tcp' or 'udp'",
+            code="config",
+            field="protocol",
+        )
+    return protocol
+
+
 def validate_password(value, field="password"):
     if not isinstance(value, str) or not value:
         raise ValidationError("password must not be empty", code="config", field=field)
@@ -47,6 +59,15 @@ def validate_password(value, field="password"):
             field=field,
         )
     return value
+
+
+def validate_optional_password(value, field="password"):
+    """Return ``None`` for a public service, otherwise a validated secret."""
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return validate_password(value, field=field)
 
 
 def validate_port(value, allow_zero=True):
@@ -71,14 +92,17 @@ def validate_forward(value):
         name = value.get("name")
         port = value.get("local_port", value.get("port"))
         password = value.get("password")
+        protocol = value.get("protocol")
     else:
         name = getattr(value, "name", None)
         port = getattr(value, "local_port", None)
         password = getattr(value, "password", None)
+        protocol = getattr(value, "protocol", None)
     return {
         "name": validate_name(name),
         "local_port": validate_port(port),
-        "password": validate_password(password),
+        "protocol": validate_protocol(protocol),
+        "password": validate_optional_password(password),
     }
 
 
@@ -90,14 +114,15 @@ def validate_forwards(values):
     for value in values:
         forward = validate_forward(value)
         port = forward["local_port"]
-        if port != 0 and port in used:
+        key = (forward["protocol"], port)
+        if port != 0 and key in used:
             raise ValidationError(
-                f"duplicate local port {port}",
+                f"duplicate local {forward['protocol']} port {port}",
                 code="port_in_use",
                 field="port",
             )
         if port != 0:
-            used.add(port)
+            used.add(key)
         forwards.append(forward)
     return forwards
 
@@ -129,6 +154,7 @@ def to_vendor_forwards(forwards):
             name=forward["name"],
             local_port=int(forward["local_port"]),
             password=forward["password"],
+            protocol=forward["protocol"],
         )
         for forward in forwards
     ]

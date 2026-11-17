@@ -19,26 +19,43 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("hash", help="server destination hash (32 hex characters)")
     parser.add_argument("--forward", action="append", default=[], metavar="NAME:PORT:PASSWORD")
+    parser.add_argument(
+        "--forward-udp", action="append", default=[], metavar="NAME:PORT:PASSWORD"
+    )
+    parser.add_argument("--forward-public", action="append", default=[], metavar="NAME:PORT")
+    parser.add_argument(
+        "--forward-udp-public", action="append", default=[], metavar="NAME:PORT"
+    )
     parser.add_argument("--configdir", default=os.path.expanduser("~/.reticulum"))
     parser.add_argument("--statedir", default=None)
     parser.add_argument("--shared-port", type=int, default=37428)
     parser.add_argument("--control-port", type=int, default=37429)
+    parser.add_argument("--udp-idle-timeout", type=float, default=None)
     parser.add_argument("--duration", type=float, default=60.0)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--list-password", default="")
-    parser.add_argument("--probe", metavar="SERVICE:PASSWORD", default=None)
+    parser.add_argument("--probe", metavar="SERVICE[:PASSWORD]", default=None)
     return parser.parse_args()
 
 
-def parse_forward(value):
-    name, port, password = value.split(":", 2)
-    return {"name": name, "local_port": int(port), "password": password}
+def parse_forward(value, protocol="tcp", public=False):
+    if public:
+        name, port = value.split(":", 1)
+        password = None
+    else:
+        name, port, password = value.split(":", 2)
+    return {
+        "name": name,
+        "local_port": int(port),
+        "protocol": protocol,
+        "password": password,
+    }
 
 
 def parse_probe(value):
-    service, password = value.split(":", 1)
-    return service, password
+    service, _, password = value.partition(":")
+    return service, (password or None)
 
 
 def main():
@@ -49,12 +66,16 @@ def main():
     from portfwd_android.engine import Engine
     from portfwd_android.validation import ValidationError
 
+    engine_options = {}
+    if args.udp_idle_timeout is not None:
+        engine_options["udp_idle_timeout"] = args.udp_idle_timeout
     engine = Engine(
         rns_dir=args.configdir,
         config_dir=statedir,
         shared_port=args.shared_port,
         control_port=args.control_port,
         require_shared=True,
+        **engine_options,
     )
     engine.start()
     status = engine.snapshot()["transport"]
@@ -72,6 +93,11 @@ def main():
             engine.probe(args.hash, service, password)
             return wait_aux(engine, "probe", args.json)
         forwards = [parse_forward(value) for value in args.forward]
+        forwards += [parse_forward(value, "udp") for value in args.forward_udp]
+        forwards += [parse_forward(value, public=True) for value in args.forward_public]
+        forwards += [
+            parse_forward(value, "udp", public=True) for value in args.forward_udp_public
+        ]
         engine.connect(args.hash, forwards, args.list_password or None)
     except ValidationError as error:
         print(f"invalid configuration: {error}", file=sys.stderr)

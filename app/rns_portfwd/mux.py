@@ -8,13 +8,14 @@ from typing import cast
 from .constants import STREAM_ID_MAX
 from .protocol import (
     CloseMessage,
+    DatagramMessage,
     DataMessage,
     OpenErrMessage,
     OpenMessage,
     OpenOkMessage,
     WindowMessage,
 )
-from .streams import ChannelTransport, StreamSession
+from .streams import ChannelTransport, SessionBase
 
 
 class Mux:
@@ -38,7 +39,7 @@ class Mux:
         self.is_client = is_client
         self.open_handler = open_handler
 
-        self._streams: dict[int, StreamSession] = {}
+        self._streams: dict[int, SessionBase] = {}
         self._pending: set[int] = set()
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
@@ -88,7 +89,7 @@ class Mux:
             self._pending.add(stream_id)
             return True
 
-    def install(self, stream_id: int, stream: StreamSession) -> bool:
+    def install(self, stream_id: int, stream: SessionBase) -> bool:
         with self._lock:
             if self._closed:
                 self._pending.discard(stream_id)
@@ -105,7 +106,7 @@ class Mux:
             self._pending.discard(stream_id)
             self._cond.notify_all()
 
-    def get(self, stream_id: int) -> StreamSession | None:
+    def get(self, stream_id: int) -> SessionBase | None:
         with self._lock:
             return self._streams.get(stream_id)
 
@@ -133,7 +134,13 @@ class Mux:
 
         try:
             if isinstance(message, DataMessage):
-                stream.on_remote_data(message.data, message.eof, message.compressed)
+                handler = getattr(stream, "on_remote_data", None)
+                if handler is not None:
+                    handler(message.data, message.eof, message.compressed)
+            elif isinstance(message, DatagramMessage):
+                handler = getattr(stream, "on_remote_datagram", None)
+                if handler is not None:
+                    handler(message.data)
             elif isinstance(message, WindowMessage):
                 stream.on_window(cast(int, getattr(message, "credit", 0)))
             elif isinstance(message, CloseMessage):

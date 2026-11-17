@@ -55,11 +55,16 @@ class ProfileStore:
                 port = int(forward.get("local_port", forward.get("port", 0)))
             except (TypeError, ValueError):
                 continue
+            protocol = str(forward.get("protocol") or "tcp").strip().lower()
+            password = forward.get("password")
+            if password is not None:
+                password = str(password) or None
             forwards.append(
                 {
                     "name": str(forward.get("name", "")),
                     "local_port": port,
-                    "password": str(forward.get("password", "")),
+                    "protocol": protocol,
+                    "password": password,
                 }
             )
         try:
@@ -128,7 +133,10 @@ class ProfileStore:
                 {
                     "name": str(forward["name"]),
                     "local_port": int(forward["local_port"]),
-                    "password": str(forward["password"]),
+                    "protocol": str(forward.get("protocol") or "tcp"),
+                    "password": (str(forward["password"]) or None)
+                    if forward.get("password") is not None
+                    else None,
                 }
                 for forward in forwards
             ]

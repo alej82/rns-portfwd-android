@@ -1,3 +1,3 @@
-"""rns-portfwd: multiplexed TCP port forwarding over Reticulum."""
+"""rns-portfwd: multiplexed TCP and UDP port forwarding over Reticulum."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

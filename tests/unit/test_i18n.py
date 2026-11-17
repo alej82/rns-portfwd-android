@@ -52,5 +52,12 @@ def test_missing_key_returns_key():
     assert i18n.t("does.not.exist") == "does.not.exist"
 
 
+def test_protocol_mismatch_keeps_backend_names():
+    text = i18n.t("error.protocol_mismatch", service="db-prod", protocol="udp", expected="tcp")
+    assert "db-prod" in text
+    assert "udp" in text
+    assert "tcp" in text
+
+
 def test_placeholder_names():
     assert i18n.placeholder_names("a {name} b {port}") == {"name", "port"}

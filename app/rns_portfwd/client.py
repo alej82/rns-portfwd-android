@@ -15,10 +15,12 @@ from .constants import (
     DEFAULT_MAX_STREAMS,
     DEFAULT_OPEN_TIMEOUT,
     DEFAULT_PATH_TIMEOUT,
+    DEFAULT_UDP_IDLE_TIMEOUT,
     DEFAULT_WINDOW,
     PROTOCOL_VERSION,
     ErrorCode,
 )
+from .datagrams import DatagramSession
 from .discovery import (
     init_reticulum,
     parse_destination_hash,
@@ -29,6 +31,10 @@ from .link_manager import LinkManager
 from .mux import Mux
 from .protocol import register_message_types
 from .streams import StreamSession
+
+_MAX_UDP_READ = 65536
+_MAX_UDP_PENDING = 32
+_MSG_TRUNC = getattr(socket, "MSG_TRUNC", 0)
 
 
 def _format_endpoint(host: str, port: int) -> str:
@@ -83,6 +89,7 @@ class PortfwdClient:
         window: int = DEFAULT_WINDOW,
         max_streams: int = DEFAULT_MAX_STREAMS,
         compress: bool = True,
+        udp_idle_timeout: float = DEFAULT_UDP_IDLE_TIMEOUT,
         verbosity: int = 0,
     ):
         self.server_hash = server_hash
@@ -95,6 +102,7 @@ class PortfwdClient:
         self.window = window
         self.max_streams = max_streams
         self.compress = compress
+        self.udp_idle_timeout = udp_idle_timeout
         self.verbosity = verbosity
 
         self._stop = threading.Event()
@@ -108,6 +116,9 @@ class PortfwdClient:
         self._supervisor: threading.Thread | None = None
         self._identity = None
         self._started_rns = False
+        self._udp_lock = threading.Lock()
+        self._udp_sessions: dict[tuple[str, tuple], DatagramSession] = {}
+        self._udp_pending: dict[tuple[str, tuple], list[bytes]] = {}
 
     def run(self) -> None:
         self._identity = self._resolve()
@@ -123,8 +134,13 @@ class PortfwdClient:
                 f"{forward.name} -> {_format_endpoint(self.bind, actual_port)}",
                 flush=True,
             )
+            target = (
+                self._udp_receive_loop
+                if forward.protocol == "udp"
+                else self._accept_loop
+            )
             thread = threading.Thread(
-                target=self._accept_loop,
+                target=target,
                 args=(forward, listener),
                 name=f"accept-{forward.name}",
                 daemon=True,
@@ -179,6 +195,9 @@ class PortfwdClient:
             self.mux = None
             self.link = None
         self.logger.warning("link closed; closing live streams and reconnecting")
+        with self._udp_lock:
+            self._udp_sessions.clear()
+            self._udp_pending.clear()
         if mux is not None:
             mux.close_all("link lost", send_close=False)
 
@@ -203,20 +222,26 @@ class PortfwdClient:
         link = self.link
         if link is None:
             raise ResolutionError("no active link for probing")
-        checked: set[str] = set()
+        checked: dict[str, dict] = {}
         for forward in self.forwards:
-            if forward.name in checked:
-                continue
-            checked.add(forward.name)
-            response = link_request(
-                link,
-                "/probe",
-                {"service": forward.name, "password": forward.password},
-                self.connect_timeout,
-            )
-            if not isinstance(response, dict) or not response.get("ok"):
+            if forward.name not in checked:
+                response = link_request(
+                    link,
+                    "/probe",
+                    {"service": forward.name, "password": forward.password or ""},
+                    self.connect_timeout,
+                )
+                if not isinstance(response, dict) or not response.get("ok"):
+                    raise AuthError(
+                        f"authentication failed for service {forward.name!r}"
+                    )
+                public = response.get("service")
+                checked[forward.name] = public if isinstance(public, dict) else {}
+            protocol = checked[forward.name].get("protocol", "tcp")
+            if protocol != forward.protocol:
                 raise AuthError(
-                    f"authentication failed for service {forward.name!r}"
+                    f"service {forward.name!r} is {protocol}, "
+                    f"not {forward.protocol}"
                 )
 
     def _create_listeners(self) -> None:
@@ -224,9 +249,13 @@ class PortfwdClient:
         try:
             for forward in self.forwards:
                 family = socket.AF_INET6 if ":" in self.bind else socket.AF_INET
-                sock = socket.create_server(
-                    (self.bind, forward.local_port), family=family
-                )
+                if forward.protocol == "udp":
+                    sock = socket.socket(family, socket.SOCK_DGRAM)
+                    sock.bind((self.bind, forward.local_port))
+                else:
+                    sock = socket.create_server(
+                        (self.bind, forward.local_port), family=family
+                    )
                 sock.settimeout(0.5)
                 actual_port = sock.getsockname()[1]
                 created.append((forward, sock, actual_port))
@@ -304,7 +333,7 @@ class PortfwdClient:
 
         try:
             mux.transport.send_open(
-                stream_id, PROTOCOL_VERSION, forward.name, forward.password
+                stream_id, PROTOCOL_VERSION, forward.name, forward.password or ""
             )
         except Exception as exc:
             mux.remove(stream_id)
@@ -324,6 +353,143 @@ class PortfwdClient:
         stream.send_initial_window()
         stream.start()
         self.logger.info("stream %s opened", stream.label)
+
+    def _udp_receive_loop(self, forward: Forward, listener: socket.socket) -> None:
+        while not self._stop.is_set():
+            try:
+                data, _, flags, peer = listener.recvmsg(_MAX_UDP_READ)
+            except TimeoutError:
+                self._reap_udp_sessions()
+                continue
+            except OSError:
+                return
+            self._reap_udp_sessions()
+            if flags & _MSG_TRUNC:
+                self.logger.debug(
+                    "dropping oversized local datagram for %s", forward.name
+                )
+                continue
+            key = (forward.name, peer)
+            start_opener = False
+            with self._udp_lock:
+                session = self._udp_sessions.get(key)
+                if session is None:
+                    pending = self._udp_pending.get(key)
+                    if pending is None:
+                        self._udp_pending[key] = [data]
+                        start_opener = True
+                    elif len(pending) < _MAX_UDP_PENDING:
+                        pending.append(data)
+                    else:
+                        self.logger.debug(
+                            "dropping datagram for %s: pending open is full",
+                            forward.name,
+                        )
+            if session is not None:
+                session.send_local(data)
+            elif start_opener:
+                threading.Thread(
+                    target=self._open_udp_session,
+                    args=(forward, listener, peer, key),
+                    name=f"open-udp-{forward.name}",
+                    daemon=True,
+                ).start()
+
+    def _open_udp_session(self, forward: Forward, listener, peer, key) -> None:
+        try:
+            if not self._link_ready.wait(self.connect_timeout):
+                self.logger.warning(
+                    "closing UDP session for %s: no Link within %.0fs",
+                    forward.name,
+                    self.connect_timeout,
+                )
+                return
+            mux = self.mux
+            if mux is None:
+                return
+            if not mux.wait_for_slot(self.connect_timeout, self._stop):
+                self.logger.warning(
+                    "closing UDP session for %s: stream limit reached",
+                    forward.name,
+                )
+                return
+            stream_id = mux.allocate_id()
+            if stream_id is None:
+                self.logger.error(
+                    "stream identifiers exhausted; recycling the Link"
+                )
+                self._recycle_link()
+                return
+            if not mux.reserve(stream_id):
+                return
+
+            session = DatagramSession(
+                stream_id=stream_id,
+                sock=listener,
+                transport=mux.transport,
+                window=self.window,
+                logger=self.logger,
+                on_closed=lambda closed, key=key, mux=mux: self._udp_session_closed(
+                    key, mux, closed
+                ),
+                label=f"{forward.name}/{stream_id}",
+                peer=peer,
+                owns_socket=False,
+                idle_timeout=self.udp_idle_timeout,
+            )
+            if not mux.install(stream_id, session):
+                mux.release_reservation(stream_id)
+                return
+
+            try:
+                mux.transport.send_open(
+                    stream_id, PROTOCOL_VERSION, forward.name, forward.password or ""
+                )
+            except Exception as exc:
+                mux.remove(stream_id)
+                session.on_closed = None
+                session.abort(f"could not send OPEN: {exc}", send_close=False)
+                return
+
+            if not session.opened.wait(DEFAULT_OPEN_TIMEOUT):
+                session.abort("open timeout")
+                return
+            if session.open_error is not None:
+                self._log_open_error(forward.name, session.open_error)
+                return
+            if session.closed:
+                return
+
+            session.send_initial_window()
+            session.start()
+            with self._udp_lock:
+                pending = self._udp_pending.pop(key, [])
+                if session.closed:
+                    return
+                for datagram in pending:
+                    session.send_local(datagram)
+                self._udp_sessions[key] = session
+            self.logger.info("stream %s opened", session.label)
+        finally:
+            with self._udp_lock:
+                self._udp_pending.pop(key, None)
+
+    def _udp_session_closed(self, key, mux: Mux, session) -> None:
+        with self._udp_lock:
+            if self._udp_sessions.get(key) is session:
+                del self._udp_sessions[key]
+        try:
+            mux.remove(session.stream_id)
+        except Exception:
+            pass
+
+    def _reap_udp_sessions(self) -> None:
+        now = time.monotonic()
+        with self._udp_lock:
+            sessions = list(self._udp_sessions.items())
+        for _, session in sessions:
+            if session.idle_for(now) >= self.udp_idle_timeout:
+                session.abort("idle timeout")
 
     def _log_open_error(self, service: str, code: int) -> None:
         if code == ErrorCode.AUTH:
@@ -369,6 +535,9 @@ class PortfwdClient:
             self.link_manager = None
         if mux is not None:
             mux.close_all("shutting down", send_close=True)
+        with self._udp_lock:
+            self._udp_sessions.clear()
+            self._udp_pending.clear()
         if manager is not None:
             manager.close()
         if self._started_rns:
@@ -457,7 +626,8 @@ def run_probe(
             )
             if not isinstance(response, dict) or not response.get("ok"):
                 raise AuthError(
-                    f"authentication failed for service {service!r}"
+                    f"authentication failed for service {service!r}; "
+                    "the service may require --service-password"
                 )
             public = response.get("service", {})
             print(

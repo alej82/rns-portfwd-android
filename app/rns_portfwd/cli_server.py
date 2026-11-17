@@ -11,6 +11,9 @@ from .config import (
     apply_server_secrets,
     default_server_name,
     parse_expose,
+    parse_expose_public,
+    parse_expose_udp,
+    parse_expose_udp_public,
     read_secret_source,
     validate_services,
 )
@@ -18,9 +21,11 @@ from .constants import (
     DEFAULT_ANNOUNCE_INTERVAL,
     DEFAULT_AUTH_TIMEOUT,
     DEFAULT_BACKEND_TIMEOUT,
+    DEFAULT_MAX_CONNECTIONS_PER_PUBLIC,
     DEFAULT_MAX_CONNECTIONS_PER_SERVICE,
     DEFAULT_MAX_LINKS,
     DEFAULT_MAX_STREAMS,
+    DEFAULT_UDP_IDLE_TIMEOUT,
     DEFAULT_WINDOW,
     EXIT_OK,
     MAX_CREDIT,
@@ -33,14 +38,16 @@ from .server import PortfwdServer
 EXAMPLES = """\
 examples:
   rns-portfwd-server --expose 127.0.0.1:22:ssh:s3cret --list-password listpass
-  rns-portfwd-server --expose '[::1]:5432:db:pa:ss' --announce --no-compress
+  rns-portfwd-server --expose-udp 127.0.0.1:5353:dns:s3cret --announce
+  rns-portfwd-server --expose '[::1]:5432:db:pa:ss' --no-compress
+  rns-portfwd-server --expose-public 127.0.0.1:80:web --expose 127.0.0.1:22:ssh:s3cret
 """
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rns-portfwd-server",
-        description="Expose local TCP services over a Reticulum shared instance.",
+        description="Expose local TCP and UDP services over a Reticulum shared instance.",
         epilog=EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -63,6 +70,27 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="HOST:PORT:NAME:PASSWORD",
         help="TCP service to expose; may be repeated",
     )
+    parser.add_argument(
+        "--expose-udp",
+        action="append",
+        default=[],
+        metavar="HOST:PORT:NAME:PASSWORD",
+        help="UDP service to expose; may be repeated",
+    )
+    parser.add_argument(
+        "--expose-public",
+        action="append",
+        default=[],
+        metavar="HOST:PORT:NAME",
+        help="TCP service to expose without a password; may be repeated",
+    )
+    parser.add_argument(
+        "--expose-udp-public",
+        action="append",
+        default=[],
+        metavar="HOST:PORT:NAME",
+        help="UDP service to expose without a password; may be repeated",
+    )
     parser.add_argument("--announce", action="store_true", help="emit announces periodically")
     parser.add_argument(
         "--announce-interval",
@@ -81,8 +109,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_CONNECTIONS_PER_SERVICE,
     )
+    parser.add_argument(
+        "--max-connections-per-public",
+        type=int,
+        default=DEFAULT_MAX_CONNECTIONS_PER_PUBLIC,
+        help="concurrent connections allowed per passwordless service",
+    )
     parser.add_argument("--auth-timeout", type=float, default=DEFAULT_AUTH_TIMEOUT)
     parser.add_argument("--backend-timeout", type=float, default=DEFAULT_BACKEND_TIMEOUT)
+    parser.add_argument(
+        "--udp-idle-timeout",
+        type=float,
+        default=DEFAULT_UDP_IDLE_TIMEOUT,
+        help="seconds before an idle UDP session is closed",
+    )
     parser.add_argument(
         "--password-stdin",
         action="store_true",
@@ -109,12 +149,16 @@ def _validate_options(args) -> None:
         raise ConfigError("--max-links must be at least 1")
     if args.max_connections_per_service < 1:
         raise ConfigError("--max-connections-per-service must be at least 1")
+    if args.max_connections_per_public < 1:
+        raise ConfigError("--max-connections-per-public must be at least 1")
     if args.announce_interval <= 0:
         raise ConfigError("--announce-interval must be positive")
     if args.auth_timeout <= 0:
         raise ConfigError("--auth-timeout must be positive")
     if args.backend_timeout <= 0:
         raise ConfigError("--backend-timeout must be positive")
+    if args.udp_idle_timeout <= 0:
+        raise ConfigError("--udp-idle-timeout must be positive")
     if not args.name or len(args.name) > 64:
         raise ConfigError("--name must be between 1 and 64 characters")
 
@@ -125,6 +169,9 @@ def main(argv: list[str] | None = None) -> int:
     logger = setup_logging(args.verbose)
     try:
         services = [parse_expose(item) for item in args.expose]
+        services += [parse_expose_udp(item) for item in args.expose_udp]
+        services += [parse_expose_public(item) for item in args.expose_public]
+        services += [parse_expose_udp_public(item) for item in args.expose_udp_public]
         validate_services(services)
         name = args.name or default_server_name()
         args.name = name
@@ -151,8 +198,10 @@ def main(argv: list[str] | None = None) -> int:
             max_links=args.max_links,
             max_streams=args.max_streams,
             max_connections_per_service=args.max_connections_per_service,
+            max_connections_per_public=args.max_connections_per_public,
             auth_timeout=args.auth_timeout,
             backend_timeout=args.backend_timeout,
+            udp_idle_timeout=args.udp_idle_timeout,
             verbosity=args.verbose,
         )
 

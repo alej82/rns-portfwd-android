@@ -27,6 +27,14 @@ def free_port() -> int:
     return port
 
 
+def free_udp_port() -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
 class SharedInstance:
     def __init__(self, root: Path):
         self.root = root
@@ -98,6 +106,40 @@ class BulkHandler(socketserver.BaseRequestHandler):
                 self.request.sendall(b"B" * 65536)
         except OSError:
             pass
+
+
+class UDPServer:
+    """UDP echo backend: every datagram is sent back to its source."""
+
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.settimeout(0.5)
+        self.port = self.sock.getsockname()[1]
+        self._stop = threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                data, peer = self.sock.recvfrom(65536)
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            try:
+                self.sock.sendto(data, peer)
+            except OSError:
+                return
+
+    def close(self):
+        self._stop.set()
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        self.thread.join(timeout=2)
 
 
 class TCPServer:
@@ -204,6 +246,9 @@ def start_server(
     extra: list[str] | None = None,
     password: str = "secret",
     list_password: str | None = "listpass",
+    udp_services: dict[str, int] | None = None,
+    public_services: dict[str, int] | None = None,
+    public_udp_services: dict[str, int] | None = None,
 ) -> tuple[Process, str]:
     identity = instance.root / f"server-{uuid.uuid4().hex}.id"
     args = [
@@ -221,6 +266,12 @@ def start_server(
         args += ["--list-password", list_password]
     for name, port in services.items():
         args += ["--expose", f"127.0.0.1:{port}:{name}:{password}"]
+    for name, port in (udp_services or {}).items():
+        args += ["--expose-udp", f"127.0.0.1:{port}:{name}:{password}"]
+    for name, port in (public_services or {}).items():
+        args += ["--expose-public", f"127.0.0.1:{port}:{name}"]
+    for name, port in (public_udp_services or {}).items():
+        args += ["--expose-udp-public", f"127.0.0.1:{port}:{name}"]
     args += extra or []
     process = Process(args)
     line = process.wait_for("destination:", timeout=30)
@@ -233,6 +284,9 @@ def start_engine(
     forwards: list[str],
     extra: list[str] | None = None,
     wait: bool = True,
+    udp_forwards: list[str] | None = None,
+    public_forwards: list[str] | None = None,
+    public_udp_forwards: list[str] | None = None,
 ) -> EngineProcess:
     args = [
         sys.executable,
@@ -251,6 +305,12 @@ def start_engine(
     ]
     for forward in forwards:
         args += ["--forward", forward]
+    for forward in udp_forwards or []:
+        args += ["--forward-udp", forward]
+    for forward in public_forwards or []:
+        args += ["--forward-public", forward]
+    for forward in public_udp_forwards or []:
+        args += ["--forward-udp-public", forward]
     args += extra or []
     process = EngineProcess(args)
     if wait:
@@ -302,6 +362,40 @@ def echo_roundtrip(port: int, payload: bytes, timeout: float = 30) -> bytes:
         return b"".join(chunks)
     finally:
         sock.close()
+
+
+def udp_roundtrip(port: int, payload: bytes, timeout: float = 30) -> bytes:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    sock.connect(("127.0.0.1", port))
+    try:
+        sock.send(payload)
+        return sock.recv(65536)
+    finally:
+        sock.close()
+
+
+def udp_roundtrip_v6(port: int, payload: bytes, timeout: float = 30) -> bytes:
+    sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    sock.connect(("::1", port))
+    try:
+        sock.send(payload)
+        return sock.recv(65536)
+    finally:
+        sock.close()
+
+
+def wait_until(predicate, timeout: float = 20, interval: float = 0.2) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if predicate():
+                return True
+        except Exception:
+            pass
+        time.sleep(interval)
+    return False
 
 
 def read_all(port: int, timeout: float = 60) -> bytes:

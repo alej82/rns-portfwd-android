@@ -5,6 +5,7 @@ from rns_portfwd.constants import (
     DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_MAX_STREAMS,
     DEFAULT_PATH_TIMEOUT,
+    DEFAULT_UDP_IDLE_TIMEOUT,
     DEFAULT_WINDOW,
 )
 from rns_portfwd.errors import ResolutionError
@@ -26,7 +27,7 @@ from .validation import (
     validate_config,
     validate_hash,
     validate_name,
-    validate_password,
+    validate_optional_password,
 )
 
 
@@ -50,6 +51,7 @@ class Engine:
         window=DEFAULT_WINDOW,
         max_streams=DEFAULT_MAX_STREAMS,
         compress=True,
+        udp_idle_timeout=DEFAULT_UDP_IDLE_TIMEOUT,
     ):
         prepare_environment()
         self.rns_dir = rns_dir or os.environ.get("PORTFWD_RNS_DIR") or os.path.expanduser("~/.reticulum")
@@ -62,6 +64,7 @@ class Engine:
         self.window = window
         self.max_streams = max_streams
         self.compress = compress
+        self.udp_idle_timeout = udp_idle_timeout
         self.logger = get_logger()
 
         self.events = EventBus(maxlen=500)
@@ -233,6 +236,7 @@ class Engine:
             window=self.window,
             max_streams=self.max_streams,
             compress=self.compress,
+            udp_idle_timeout=self.udp_idle_timeout,
             logger=self.logger,
         )
         with self._lock:
@@ -266,11 +270,11 @@ class Engine:
         register_secret(list_password)
         self._start_aux("list", lambda: self._list_worker(resolved_hash, list_password or ""))
 
-    def probe(self, server_hash, service, password):
+    def probe(self, server_hash, service, password=None):
         try:
             resolved_hash = validate_hash(server_hash)
             resolved_service = validate_name(service)
-            resolved_password = validate_password(password)
+            resolved_password = validate_optional_password(password)
         except ValidationError as error:
             raise EngineError(error.code, str(error), error.field) from None
         if self._session_busy():
@@ -279,7 +283,9 @@ class Engine:
         register_secret(resolved_password)
         self._start_aux(
             "probe",
-            lambda: self._probe_worker(resolved_hash, resolved_service, resolved_password),
+            lambda: self._probe_worker(
+                resolved_hash, resolved_service, resolved_password or ""
+            ),
         )
 
     def _start_aux(self, kind, operation):
@@ -399,6 +405,7 @@ class Engine:
                 "retry_in": None,
                 "error_code": None,
                 "error": None,
+                "error_params": {},
                 "link": False,
                 "server_hash": None,
                 "forwards": [],

@@ -1,5 +1,6 @@
 import math
 import random
+import socket
 import threading
 import time
 
@@ -8,10 +9,12 @@ from rns_portfwd.constants import (
     DEFAULT_MAX_STREAMS,
     DEFAULT_OPEN_TIMEOUT,
     DEFAULT_PATH_TIMEOUT,
+    DEFAULT_UDP_IDLE_TIMEOUT,
     DEFAULT_WINDOW,
     PROTOCOL_VERSION,
     ErrorCode,
 )
+from rns_portfwd.datagrams import DatagramSession
 from rns_portfwd.errors import AuthError, ResolutionError
 from rns_portfwd.logging import get_logger
 from rns_portfwd.mux import Mux
@@ -22,6 +25,10 @@ from . import rns_ops
 from .listeners import BindFailure, open_all
 from .validation import ValidationError
 
+_MAX_UDP_READ = 65536
+_MAX_UDP_PENDING = 32
+_MSG_TRUNC = getattr(socket, "MSG_TRUNC", 0)
+
 
 class Retryable(RuntimeError):
     def __init__(self, code, message="", stage="resolve"):
@@ -31,9 +38,10 @@ class Retryable(RuntimeError):
 
 
 class Terminal(RuntimeError):
-    def __init__(self, code, message=""):
+    def __init__(self, code, message="", fields=None):
         super().__init__(message or code)
         self.code = code
+        self.fields = dict(fields or {})
 
 
 def _jittered(attempt):
@@ -64,6 +72,7 @@ class Session:
         window=DEFAULT_WINDOW,
         max_streams=DEFAULT_MAX_STREAMS,
         compress=True,
+        udp_idle_timeout=DEFAULT_UDP_IDLE_TIMEOUT,
         logger=None,
     ):
         self.engine = engine
@@ -79,12 +88,14 @@ class Session:
         self.window = window
         self.max_streams = max_streams
         self.compress = compress
+        self.udp_idle_timeout = float(udp_idle_timeout)
         self.logger = logger if logger is not None else get_logger()
 
         self.state = "idle"
         self.wanted = False
         self.error = None
         self.error_code = None
+        self.error_params = {}
         self.retry_attempt = 0
         self.retry_in = None
         self.link_ready = False
@@ -94,17 +105,23 @@ class Session:
         self.listeners = []
         self._accept_threads = []
         self._active = {}
+        self._udp_sessions = {}
+        self._udp_pending = {}
         self._forward_stats = []
         for forward in self.forward_specs:
+            protocol = forward.get("protocol") or "tcp"
             self._forward_stats.append(
                 {
                     "name": forward["name"],
                     "requested_port": int(forward["local_port"]),
+                    "protocol": protocol,
+                    "public": forward.get("password") is None,
                     "actual_port": None,
                     "streams": 0,
                     "connections": 0,
                     "bytes_in": 0,
                     "bytes_out": 0,
+                    "dropped": 0,
                     "ipv6": False,
                     "degraded": False,
                     "last_error": None,
@@ -154,7 +171,7 @@ class Session:
             self._start_accept_threads()
             self._supervise()
         except Terminal as error:
-            self._fail(error.code, str(error))
+            self._fail(error.code, str(error), fields=error.fields)
         except Retryable:
             self._fail("link_failed", "could not establish the session")
         except rns_ops.Cancelled:
@@ -219,6 +236,11 @@ class Session:
         self._set_state("probing", retry_attempt=self.retry_attempt)
         try:
             self._probe_all(link)
+        except Terminal:
+            rns_ops.close_link(link)
+            with self._lock:
+                self.link = None
+            raise
         except AuthError as error:
             rns_ops.close_link(link)
             with self._lock:
@@ -258,6 +280,7 @@ class Session:
             self._link_lost.clear()
             self.error = None
             self.error_code = None
+            self.error_params = {}
             self.retry_in = None
             self.retry_attempt = 0
             self.state = "probing" if initial else "listening"
@@ -270,20 +293,29 @@ class Session:
         )
 
     def _probe_all(self, link):
-        checked = set()
+        checked = {}
         for forward in self.forward_specs:
-            if forward["name"] in checked:
-                continue
-            checked.add(forward["name"])
-            response = rns_ops.link_request(
-                link,
-                "/probe",
-                {"service": forward["name"], "password": forward["password"]},
-                self.connect_timeout,
-                self._stop,
-            )
-            if not isinstance(response, dict) or not response.get("ok"):
-                raise AuthError("authentication failed")
+            name = forward["name"]
+            if name not in checked:
+                response = rns_ops.link_request(
+                    link,
+                    "/probe",
+                    {"service": name, "password": forward.get("password") or ""},
+                    self.connect_timeout,
+                    self._stop,
+                )
+                if not isinstance(response, dict) or not response.get("ok"):
+                    raise AuthError(f"authentication failed for service {name!r}")
+                public = response.get("service")
+                checked[name] = public if isinstance(public, dict) else {}
+            actual = str(checked[name].get("protocol") or "tcp")
+            expected = forward.get("protocol") or "tcp"
+            if actual != expected:
+                raise Terminal(
+                    "protocol_mismatch",
+                    f"service {name!r} is {actual}, not {expected}",
+                    fields={"service": name, "expected": expected, "actual": actual},
+                )
 
     def _sleep_retry(self, attempt, code):
         delay = _jittered(attempt)
@@ -333,6 +365,7 @@ class Session:
                         if not self._sleep_retry(attempt, error.code):
                             return
                 continue
+            self._reap_udp_sessions()
             with self._lock:
                 if not self.link_ready:
                     self._link_lost.set()
@@ -383,14 +416,220 @@ class Session:
     def _start_accept_threads(self):
         for bound in self.listeners:
             for sock in list(bound.sockets):
+                if bound.protocol == "udp":
+                    target = self._udp_loop
+                    prefix = "udp"
+                else:
+                    target = self._accept_loop
+                    prefix = "accept"
                 thread = threading.Thread(
-                    target=self._accept_loop,
+                    target=target,
                     args=(bound, sock),
-                    name=f"accept-{bound.name}-{bound.actual_port}",
+                    name=f"{prefix}-{bound.name}-{bound.actual_port}",
                     daemon=True,
                 )
                 thread.start()
                 self._accept_threads.append(thread)
+
+    def _udp_loop(self, bound, sock):
+        """Read local datagrams and map each peer to its own stream."""
+        while not self._stop.is_set():
+            try:
+                data, _ancdata, flags, peer = sock.recvmsg(_MAX_UDP_READ)
+            except TimeoutError:
+                self._reap_udp_sessions()
+                continue
+            except OSError:
+                return
+            try:
+                self._handle_udp_datagram(bound, sock, data, flags, peer)
+            except Exception:
+                # Never let one bad datagram kill the receive loop: the socket
+                # would stay bound but stop reading until the session restarts.
+                self.logger.exception("UDP receive loop error on %s", bound.name)
+                if self._stop.wait(0.05):
+                    return
+
+    def _handle_udp_datagram(self, bound, sock, data, flags, peer):
+        if flags & _MSG_TRUNC:
+            self.logger.debug(
+                "dropping oversized local datagram for %s (max %d bytes)",
+                bound.name,
+                _MAX_UDP_READ,
+            )
+            return
+
+        key = (bound.name, sock, peer)
+        start_opener = False
+        dropped = False
+        with self._lock:
+            session = self._udp_sessions.get(key)
+            if session is None:
+                pending = self._udp_pending.get(key)
+                if pending is None:
+                    if len(self._udp_pending) >= self.max_streams:
+                        dropped = True
+                    else:
+                        self._udp_pending[key] = [data]
+                        start_opener = True
+                elif len(pending) < _MAX_UDP_PENDING:
+                    pending.append(data)
+                else:
+                    dropped = True
+        if dropped:
+            self.logger.debug(
+                "dropping datagram for %s: too many pending streams or a full buffer",
+                bound.name,
+            )
+            return
+        if session is not None:
+            session.send_local(data)
+        elif start_opener:
+            thread = threading.Thread(
+                target=self._open_udp_session,
+                args=(bound, sock, peer, key),
+                name=f"open-udp-{bound.name}",
+                daemon=True,
+            )
+            try:
+                thread.start()
+            except RuntimeError:
+                self.logger.warning(
+                    "could not start a UDP opener for %s", bound.name
+                )
+                with self._lock:
+                    self._udp_pending.pop(key, None)
+                raise
+
+    def _reap_udp_sessions(self):
+        now = time.monotonic()
+        with self._lock:
+            sessions = list(self._udp_sessions.values())
+        for session in sessions:
+            if session.idle_for(now) >= self.udp_idle_timeout:
+                self.logger.debug("closing idle UDP stream %s", session.label)
+                session.abort("idle timeout")
+
+    def _open_udp_session(self, bound, sock, peer, key):
+        stats = getattr(bound, "stats", None)
+        forward = bound.forward or {}
+        try:
+            if self._stop.is_set():
+                return
+            mux = self._wait_link()
+            if mux is None:
+                self.logger.debug(
+                    "dropping UDP stream for %s: link unavailable", bound.name
+                )
+                return
+            if not mux.wait_for_slot(self.connect_timeout, self._stop):
+                self.logger.debug(
+                    "dropping UDP stream for %s: stream limit reached", bound.name
+                )
+                return
+            stream_id = mux.allocate_id()
+            if stream_id is None:
+                self.logger.debug(
+                    "dropping UDP stream for %s: stream ids exhausted", bound.name
+                )
+                return
+            if not mux.reserve(stream_id):
+                return
+            if not forward:
+                mux.release_reservation(stream_id)
+                return
+
+            try:
+                session = DatagramSession(
+                    stream_id=stream_id,
+                    sock=sock,
+                    transport=mux.transport,
+                    window=self.window,
+                    logger=self.logger,
+                    on_closed=lambda closed, name=bound.name, stats=stats: self._stream_closed(
+                        stats, name, closed
+                    ),
+                    label=f"{bound.name}@{bound.actual_port}/{stream_id}",
+                    peer=peer,
+                    owns_socket=False,
+                    idle_timeout=self.udp_idle_timeout,
+                )
+            except Exception:
+                mux.release_reservation(stream_id)
+                raise
+            if not mux.install(stream_id, session):
+                mux.release_reservation(stream_id)
+                session.on_closed = None
+                session.abort("could not install stream", send_close=False)
+                return
+            with self._lock:
+                if session.closed:
+                    return
+                self._active[stream_id] = {
+                    "stream": session,
+                    "name": bound.name,
+                    "stats": stats,
+                }
+                if stats is not None:
+                    stats["streams"] += 1
+                    stats["connections"] += 1
+            try:
+                mux.transport.send_open(
+                    stream_id,
+                    PROTOCOL_VERSION,
+                    forward["name"],
+                    forward.get("password") or "",
+                )
+            except Exception as error:
+                mux.remove(stream_id)
+                # Keep `on_closed`: aborting after install must still purge
+                # `_active` and the stream counter through `_stream_closed`.
+                session.abort(f"could not send OPEN: {error}", send_close=False)
+                return
+
+            if not self._wait_opened(session):
+                session.abort("open timeout")
+                return
+            if session.open_error is not None:
+                code = int(session.open_error)
+                if code == int(ErrorCode.VERSION):
+                    raise Terminal("version", "server rejected the protocol version")
+                error_code = _OPEN_ERROR_CODES.get(code, "backend")
+                if stats is not None:
+                    with self._lock:
+                        stats["last_error"] = error_code
+                self._publish(
+                    "stream_open_error",
+                    name=bound.name,
+                    port=bound.actual_port,
+                    error_code=error_code,
+                )
+                return
+            if session.closed:
+                return
+            session.send_initial_window()
+            session.start()
+            with self._lock:
+                pending = self._udp_pending.pop(key, [])
+                if session.closed:
+                    return
+                for datagram in pending:
+                    session.send_local(datagram)
+                self._udp_sessions[key] = session
+            self._publish(
+                "stream_open",
+                name=bound.name,
+                port=bound.actual_port,
+                stream_id=stream_id,
+            )
+        except Terminal as error:
+            self._fail(error.code, str(error), fields=error.fields)
+        except Exception as error:
+            self.logger.debug("UDP stream setup failed: %s", error)
+            self._record_reject(stats, "stream setup failed")
+        finally:
+            with self._lock:
+                self._udp_pending.pop(key, None)
 
     def _accept_loop(self, bound, listener):
         while not self._stop.is_set():
@@ -477,6 +716,8 @@ class Session:
                 stream.abort("could not install stream", send_close=False)
                 return
             with self._lock:
+                if stream.closed:
+                    return
                 self._active[stream_id] = {
                     "stream": stream,
                     "name": bound.name,
@@ -486,11 +727,15 @@ class Session:
                     stats["streams"] += 1
             try:
                 mux.transport.send_open(
-                    stream_id, PROTOCOL_VERSION, forward["name"], forward["password"]
+                    stream_id,
+                    PROTOCOL_VERSION,
+                    forward["name"],
+                    forward.get("password") or "",
                 )
             except Exception as error:
                 mux.remove(stream_id)
-                stream.on_closed = None
+                # Keep `on_closed`: aborting after install must still purge
+                # `_active` and the stream counter through `_stream_closed`.
                 stream.abort(f"could not send OPEN: {error}", send_close=False)
                 return
 
@@ -544,10 +789,16 @@ class Session:
     def _stream_closed(self, stats, name, stream):
         with self._lock:
             self._active.pop(stream.stream_id, None)
+            for key, session in list(self._udp_sessions.items()):
+                if session is stream:
+                    del self._udp_sessions[key]
             if stats is not None:
                 stats["streams"] = max(0, stats["streams"] - 1)
                 stats["bytes_in"] += int(stream.bytes_in)
                 stats["bytes_out"] += int(stream.bytes_out)
+                stats["dropped"] += int(getattr(stream, "dropped_oversized", 0)) + int(
+                    getattr(stream, "dropped_queue_full", 0)
+                )
                 if stream.close_reason and "open rejected" in str(stream.close_reason):
                     stats["last_error"] = "auth"
             if self.mux is not None and self.mux.get(stream.stream_id) is stream:
@@ -566,7 +817,12 @@ class Session:
             reason=reason,
         )
 
-    def _fail(self, code, message):
+    def _fail(self, code, message, fields=None):
+        params = {
+            key: value
+            for key, value in dict(fields or {}).items()
+            if key not in ("code", "message", "state", "error_code")
+        }
         with self._lock:
             if self.state == "error":
                 return
@@ -574,11 +830,12 @@ class Session:
             self.wanted = False
             self.error_code = code
             self.error = message
+            self.error_params = params
             self.retry_in = None
         self._stop.set()
         self._link_lost.set()
-        self._publish("error", code=code, message=message)
-        self._publish("session_state", state="error", error_code=code)
+        self._publish("error", code=code, message=message, **params)
+        self._publish("session_state", state="error", error_code=code, **params)
         self._close_listeners()
         self._cleanup_link(send_close=True)
 
@@ -597,12 +854,17 @@ class Session:
                 mux.close_all("link closed", send_close=send_close)
             except Exception:
                 pass
+        with self._lock:
+            self._udp_sessions.clear()
+            self._udp_pending.clear()
         rns_ops.close_link(link)
 
     def _close_listeners(self):
         with self._lock:
             listeners = self.listeners
             self.listeners = []
+            self._udp_sessions.clear()
+            self._udp_pending.clear()
         for bound in listeners:
             bound.close()
 
@@ -620,6 +882,7 @@ class Session:
             self.state = "idle"
             self.error = None
             self.error_code = None
+            self.error_params = {}
             self.retry_attempt = 0
             self.retry_in = None
         self._publish("session_state", state="idle", retry_attempt=0, retry_in=None)
@@ -634,11 +897,14 @@ class Session:
                 item = {
                     "name": stats["name"],
                     "requested_port": stats["requested_port"],
+                    "protocol": stats["protocol"],
+                    "public": stats["public"],
                     "actual_port": stats["actual_port"],
                     "streams": stats["streams"],
                     "connections": stats["connections"],
                     "bytes_in": stats["bytes_in"],
                     "bytes_out": stats["bytes_out"],
+                    "dropped": stats["dropped"],
                     "ipv6": stats["ipv6"],
                     "degraded": stats["degraded"],
                     "last_error": stats["last_error"],
@@ -654,6 +920,7 @@ class Session:
                 "retry_in": self.retry_in,
                 "error_code": self.error_code,
                 "error": self.error,
+                "error_params": dict(self.error_params or {}),
                 "link": bool(self.link_ready),
                 "server_hash": self.server_hash,
                 "forwards": forwards,
