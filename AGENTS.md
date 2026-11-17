@@ -148,11 +148,13 @@ openspec validate add-client-identity-and-stamping --strict
 openspec validate --all --strict
 ```
 
-Current verification: 214 tests pass (187 unit, 27 integration), ruff clean,
-OpenSpec strict valid. `add-client-identity-and-stamping` is complete,
-including the device pass (allow-list + stamping forward, anonymous rejection
-and reconnect after a shared-instance restart). `harden-stamp-cost-and-idle-link`
-adds the 16-cost cap, the `stamping` state and the unused-Link refresh.
+Current verification: 222 tests pass (195 unit, 27 integration), ruff clean,
+OpenSpec strict valid. The three changes are archived and `openspec/specs/`
+holds the capability specs: `client-identity`, `link-stamping`,
+`link-liveness`, `udp-forwarding` and `public-forwards`. Device passes cover
+allow-list + stamping forwards, anonymous rejection, reconnect after a
+shared-instance restart, the stamp-cost cap, the unused-Link refresh, UDP and
+public forwards, and the launcher icon/splash.
 
 ## Build notes
 

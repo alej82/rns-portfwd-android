@@ -60,4 +60,4 @@
 
 - [x] 9.1 Document UDP and public forwards in `README.md` (usage, limits, dropped datagrams, idle timeout)
 - [x] 9.2 Update `AGENTS.md` with the new vendor commit, UDP/public invariants and the profile schema note
-- [ ] 9.3 Build the APK with `scripts/build-apk.sh` and smoke-test UDP forwarding plus a public service on the POCO F2 Pro
+- [x] 9.3 Build the APK with `scripts/build-apk.sh` and smoke-test UDP forwarding plus a public service on the POCO F2 Pro (see `evidence/2026-11-17-udp-and-public/`)

@@ -1,0 +1,14 @@
+[INFO] stream web/1 opened
+[INFO] stream web/1 closed: both directions closed (6 bytes in, 6 bytes out, 0.0s)
+[INFO] stream echo/2 opened
+[INFO] stream echo/2 closed: both directions closed (10 bytes in, 10 bytes out, 0.0s)
+[INFO] stream web/3 opened
+[INFO] stream web/3 closed: both directions closed (11 bytes in, 11 bytes out, 0.0s)
+[INFO] stream uecho/4 opened
+[INFO] stream uecho/4 closed: link lost (6 bytes in, 6 bytes out, 15.0s)
+[INFO] link closed
+[INFO] link closed
+[INFO] stream upub/1 opened
+[INFO] stream upub/1 closed: link lost (10 bytes in, 10 bytes out, 15.0s)
+[INFO] link closed
+[INFO] link closed

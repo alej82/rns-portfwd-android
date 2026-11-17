@@ -1,0 +1,28 @@
+# Transcript — 2026-11-17 20:18, POCO F2 Pro (8ffbcdbf)
+# profile «UDP y público»: identify=true, stamp_mode=cost, stamp_cost=8
+# server: 5e5c054ec00d76dc6cb32d5d556d32ca, echo(tcp), uecho(udp),
+#         web(tcp public), upub(udp public), --link-stamp-cost 8
+
+# public TCP forward
+$ adb shell 'printf warmup | toybox nc -w 5 127.0.0.1 2224'
+warmup
+
+# private TCP forward with the allow-listed device identity
+$ adb shell 'printf id-privada | toybox nc -w 5 127.0.0.1 2222'
+id-privada
+
+# public TCP forward again, once the Link had already carried a stream
+$ adb shell 'printf web-publica | toybox nc -w 5 127.0.0.1 2224'
+web-publica
+
+# private UDP forward
+$ adb shell 'printf udp-id | toybox nc -u -w 4 127.0.0.1 2223'
+udp-id
+
+# public UDP forward: first datagram dropped while the session rebuilt the Link
+$ adb shell 'printf udp-pub | toybox nc -u -w 4 127.0.0.1 2225'
+(no output)
+
+# same datagram again, on the Link the previous attempt built
+$ adb shell 'printf upub-retry | toybox nc -u -w 4 127.0.0.1 2225'
+upub-retry
