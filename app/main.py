@@ -43,7 +43,7 @@ from portfwd_android.validation import (
     validate_stamp_config,
 )
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "1.0.0"
 LOG_LIMIT = 200
 
 

@@ -9,7 +9,7 @@ The app is a Kivy/python-for-android shell around an unmodified vendor copy of
 `rns_portfwd` (commit `ee2068a`). The forwarding engine is headless and the UI
 never touches RNS or sockets directly.
 
-Current version: `0.3.0` · License: GPL-3.0-or-later · Target: Android 7.0+,
+Current version: `1.0.0` · License: GPL-3.0-or-later · Target: Android 7.0+,
 `arm64-v8a`.
 
 ## Features
@@ -99,7 +99,7 @@ Android API 33, min API 24 and NDK 25b.
 
 ```bash
 scripts/setup-toolchain.sh   # venv + .p4a; reuses ~/.buildozer SDK/NDK
-scripts/build-apk.sh         # → bin/portfwd-0.3.0-arm64-v8a-debug.apk
+scripts/build-apk.sh         # → bin/portfwd-1.0.0-arm64-v8a-debug.apk
 scripts/install-apk.sh       # installs and launches on the connected device
 ```
 
